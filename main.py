@@ -45,9 +45,10 @@ def webhook():
         }
         return jsonify(response)
 
-    # --- Core Logic for Determining Symptom Result ---
+    # --- Core Logic for Determining Symptom Result and Response Text ---
     # Define a default result for unknown cases.
     symptom_result = "self_care"
+    response_text = "For symptoms lasting less than 3 days, we recommend self-care. It's often helpful to rest, stay hydrated by drinking plenty of water, and consider using over-the-counter remedies if needed. Keep an eye on your symptoms, and if they persist or get worse after 3 days, please see a GP."
 
     # Define keywords for emergency symptoms.
     emergency_keywords = ["chest pain", "difficulty breathing", "severe bleeding"]
@@ -57,15 +58,21 @@ def webhook():
 
     if is_emergency:
         symptom_result = "emergency"
+        response_text = "Your symptoms may be a medical emergency. Please seek immediate medical attention. Go to your nearest emergency service or A&E at 123 Baker Street, London, UK."
+    # The order of the following 'elif' statements is crucial.
+    # Check for the longest duration first (specialist), then the shorter duration (GP).
     elif duration_days >= 14:
         # If symptoms have lasted for 2 weeks or more, refer to a specialist.
         symptom_result = "specialist"
+        response_text = "We recommend you book an appointment to see a specialist as your symptoms have been persistent for more than 14 days."
     elif duration_days >= 3:
         # If symptoms have lasted for more than 3 days but less than 2 weeks, refer to a GP.
         symptom_result = "gp"
+        response_text = "We recommend you book an appointment to see a GP as your symptoms have been persistent for more than 3 days."
     else:
         # For symptoms lasting less than 3 days, recommend self-care.
         symptom_result = "self_care"
+        response_text = "For symptoms lasting less than 3 days, we recommend self-care. It's often helpful to rest, stay hydrated by drinking plenty of water, and consider using over-the-counter remedies if needed. Keep an eye on your symptoms, and if they persist or get worse after 3 days, please see a GP."
 
     # --- Construct the JSON response for Dialogflow CX ---
     response = {
@@ -79,7 +86,7 @@ def webhook():
                 {
                     'text': {
                         'text': [
-                            f"Analyzing your symptoms... Result is: {symptom_result}"
+                            response_text
                         ]
                     }
                 }
