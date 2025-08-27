@@ -1,6 +1,8 @@
 import os
 import json
 from flask import Flask, request, jsonify
+import psycopg2
+from psycopg2 import sql
 
 app = Flask(__name__)
 
@@ -73,6 +75,88 @@ def webhook():
         # For symptoms lasting less than 3 days, recommend self-care.
         symptom_result = "self_care"
         response_text = "For symptoms lasting less than 3 days, we recommend self-care. It's often helpful to rest, stay hydrated by drinking plenty of water, and consider using over-the-counter remedies if needed. Keep an eye on your symptoms, and if they persist or get worse after 3 days, please see a GP."
+    
+    def get_db_secrets():
+        """
+        Retrieves database credentials from a secret manager.
+        
+        You need to replace this with your actual code for fetching secrets.
+        This could involve using a client library for Google Cloud Secret Manager,
+        AWS Secrets Manager, etc.
+        
+        Example using environment variables as a fallback (for demonstration):
+        """
+        # Replace this with your actual code to get secrets from your secret manager.
+        # This is a placeholder that assumes secrets are named as provided.
+        # For example, using a library like google.cloud.secretmanager.SecretManagerServiceClient
+        
+        return {
+            "host": os.environ.get("DB_HOST"),
+            "database": os.environ.get("DB_NAME"),
+            "user": os.environ.get("DB_USER"),
+            "password": os.environ.get("DB_PASS")
+        }
+
+    # If a doctor is recommended, try to find an available doctor.
+    if symptom_result in ["gp", "specialist"]:
+        try:
+            # Retrieve secrets from the secret manager.
+            db_secrets = get_db_secrets()
+
+            # Connect to the PostgreSQL database using the retrieved secrets.
+            conn = psycopg2.connect(
+                host=db_secrets["host"],
+                database=db_secrets["database"],
+                user=db_secrets["user"],
+                password=db_secrets["password"]
+            )
+            cur = conn.cursor()
+
+            # Define the query based on the symptom result.
+            if symptom_result == "gp":
+                # Find GPs and their availability.
+                query = """
+                SELECT d.name, d.specialization, da.day_of_week, da.time_slot
+                FROM doctors d
+                JOIN doctor_availability da ON d.id = da.doctor_id
+                WHERE d.specialization = 'General Practitioner'
+                ORDER BY da.day_of_week, da.time_slot
+                LIMIT 3;
+                """
+            else: # specialist
+                # Find Specialists and their availability.
+                query = """
+                SELECT d.name, d.specialization, da.day_of_week, da.time_slot
+                FROM doctors d
+                JOIN doctor_availability da ON d.id = da.doctor_id
+                WHERE d.specialization != 'General Practitioner'
+                ORDER BY da.day_of_week, da.time_slot
+                LIMIT 3;
+                """
+            
+            cur.execute(query)
+            doctors = cur.fetchall()
+            
+            # Format the list of doctors into a readable string.
+            if doctors:
+                doctor_list = "\n\nAvailable doctors and their specialties:\n"
+                for doctor in doctors:
+                    name, specialization, day_of_week, time_slot = doctor
+                    doctor_list += f"- {name} ({specialization}) available on {day_of_week} at {time_slot}\n"
+                response_text += doctor_list
+            else:
+                response_text += "\n\nNo doctors are currently available."
+
+            cur.close()
+            conn.close()
+
+        except psycopg2.Error as e:
+            print(f"Database error: {e}")
+            response_text += "\n\nI am sorry, but I am unable to check for doctor availability at this time."
+        except Exception as e:
+            print(f"Error retrieving database secrets: {e}")
+            response_text += "\n\nI am sorry, but I am unable to connect to the database securely."
+
 
     # --- Construct the JSON response for Dialogflow CX ---
     response = {
