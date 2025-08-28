@@ -106,7 +106,8 @@ def webhook():
                 host=db_secrets["host"],
                 database=db_secrets["database"],
                 user=db_secrets["user"],
-                password=db_secrets["password"]
+                password=db_secrets["password"],
+                connect_timeout=15 # Added a 15-second timeout for the connection.
             )
             cur = conn.cursor()
 
