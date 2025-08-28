@@ -2,6 +2,7 @@ import os
 import json
 from flask import Flask, request, jsonify
 import psycopg2
+from psycopg2 as pg_error # Alias the module for cleaner error handling
 from psycopg2 import sql
 
 app = Flask(__name__)
@@ -78,27 +79,19 @@ def webhook():
     
     def get_db_secrets():
         """
-        Retrieves database credentials from a secret manager.
-        
-        You need to replace this with your actual code for fetching secrets.
-        This could involve using a client library for Google Cloud Secret Manager,
-        AWS Secrets Manager, etc.
-        
-        This version of the function is hard-coded with your provided details
-        for demonstration purposes. For production, you should use a secure
-        secret management system.
+        Retrieves database credentials from environment variables set by Secret Manager.
         """
         return {
-            "host": '35.189.124.81',
-            "database": 'healthcare',
-            "user": 'postgres',
-            "password": 'Postgres$25'
+            "host": os.environ.get("DB_HOST"),
+            "database": os.environ.get("DB_NAME"),
+            "user": os.environ.get("DB_USER"),
+            "password": os.environ.get("DB_PASS")
         }
 
     # If a doctor is recommended, try to find an available doctor.
     if symptom_result in ["gp", "specialist"]:
         try:
-            # Retrieve secrets from the secret manager.
+            # Retrieve secrets from the environment variables.
             db_secrets = get_db_secrets()
 
             # Connect to the PostgreSQL database using the retrieved secrets.
@@ -149,12 +142,14 @@ def webhook():
             cur.close()
             conn.close()
 
-        except psycopg2.Error as e:
-            print(f"Database error: {e}")
+        except pg_error.Error as e:
+            # Catch specific psycopg2 errors for more descriptive logs.
+            print(f"Database connection or query error: {e}")
             response_text += "\n\nI am sorry, but I am unable to check for doctor availability at this time."
         except Exception as e:
-            print(f"Error retrieving database secrets: {e}")
-            response_text += "\n\nI am sorry, but I am unable to connect to the database securely."
+            # Catch other potential errors, such as missing environment variables.
+            print(f"Error retrieving database secrets or connecting: {e}")
+            response_text += "\n\nI am sorry, but I was unable to connect to the database securely. Please make sure the environment variables are correctly set."
 
 
     # --- Construct the JSON response for Dialogflow CX ---
