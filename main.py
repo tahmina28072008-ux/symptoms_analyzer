@@ -2,7 +2,7 @@ import os
 import json
 from flask import Flask, request, jsonify
 import psycopg2
-from psycopg2 as pg_error # Alias the module for cleaner error handling
+from psycopg2 import Error as pg_error # Alias the module for cleaner error handling
 from psycopg2 import sql
 
 app = Flask(__name__)
@@ -142,7 +142,7 @@ def webhook():
             cur.close()
             conn.close()
 
-        except pg_error.Error as e:
+        except pg_error as e:
             # Catch specific psycopg2 errors for more descriptive logs.
             print(f"Database connection or query error: {e}")
             response_text += "\n\nI am sorry, but I am unable to check for doctor availability at this time."
