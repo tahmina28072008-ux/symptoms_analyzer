@@ -84,17 +84,15 @@ def webhook():
         This could involve using a client library for Google Cloud Secret Manager,
         AWS Secrets Manager, etc.
         
-        Example using environment variables as a fallback (for demonstration):
+        This version of the function is hard-coded with your provided details
+        for demonstration purposes. For production, you should use a secure
+        secret management system.
         """
-        # Replace this with your actual code to get secrets from your secret manager.
-        # This is a placeholder that assumes secrets are named as provided.
-        # For example, using a library like google.cloud.secretmanager.SecretManagerServiceClient
-        
         return {
-            "host": os.environ.get("DB_HOST"),
-            "database": os.environ.get("DB_NAME"),
-            "user": os.environ.get("DB_USER"),
-            "password": os.environ.get("DB_PASS")
+            "host": '35.189.124.81',
+            "database": 'healthcare',
+            "user": 'postgres',
+            "password": 'Postgres$25'
         }
 
     # If a doctor is recommended, try to find an available doctor.
