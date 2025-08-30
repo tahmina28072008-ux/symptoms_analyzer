@@ -316,6 +316,8 @@ def webhook():
 
         # Safely extract parameters from the session.
         session_params = req.get('sessionInfo', {}).get('parameters', {})
+        print(f"Webhook received parameters: {session_params}")
+
         symptoms_list = session_params.get('symptoms_list', [])
         symptom_duration_days = session_params.get('symptom_duration_days', 0)
         
@@ -331,6 +333,7 @@ def webhook():
 
         # --- Logic for Appointment Confirmation ---
         if booking_confirmed:
+            print("Entering appointment confirmation logic block...")
             selected_doctor_object = session_params.get('selected_doctor_object', {})
             
             if selected_doctor_object and user_name and dob:
@@ -396,6 +399,7 @@ def webhook():
         # --- Logic for Insurance Check ---
         # This branch is triggered when the user selects a doctor and provides an insurance provider.
         if selected_doctor_choice and insurance_provider:
+            print("Entering insurance check logic block...")
             # Match the user's "first", "second", etc. choice to the actual doctor object.
             try:
                 number_words = ["first", "second", "third", "fourth", "fifth"]
@@ -420,7 +424,7 @@ def webhook():
                 if "covered" in status:
                     response_text = f"Your visit is covered by your insurance. Your estimated copay is: {copay}. Do you want to book this appointment with Dr. {selected_doctor_name}?"
                 else:
-                    response_text = f"Dr. {selected_doctor_name} does not accept your insurance. Estimated total cost: {cost}. Would you like to book this appointment anyway?"
+                    response_text = f"This doctor does not accept your insurance. Estimated total cost: {cost}. Would you like to book this appointment anyway?"
                 
                 response = {
                     "sessionInfo": {"parameters": response_params},
