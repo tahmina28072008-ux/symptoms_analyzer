@@ -48,7 +48,7 @@ def get_available_doctors(specialty):
 
         # Step 1: Find a doctor document by specialty.
         doctors_ref = db.collection('doctors')
-        doctor_query = doctors_ref.where('specialty', '==', specialty)
+        doctor_query = doctors_ref.where(filter=firestore.FieldFilter('specialty', '==', specialty))
         doctor_docs = doctor_query.stream()
 
         for doctor_doc in doctor_docs:
@@ -69,24 +69,24 @@ def get_available_doctors(specialty):
             end_of_weekend = start_of_weekend + timedelta(days=2) # Covers Saturday and Sunday
             
             # 1. First, try to find an available appointment on the upcoming weekend.
-            weekend_query = availability_ref.where('doctor_id', '==', doctor_id)\
-                                           .where('is_booked', '==', False)\
-                                           .where('time_slot', '>', start_of_weekend)\
-                                           .where('time_slot', '<', end_of_weekend)\
-                                           .order_by('time_slot')\
-                                           .limit(1)
+            weekend_query = availability_ref.where(filter=firestore.FieldFilter('doctor_id', '==', doctor_id))\
+                                            .where(filter=firestore.FieldFilter('is_booked', '==', False))\
+                                            .where(filter=firestore.FieldFilter('time_slot', '>', start_of_weekend))\
+                                            .where(filter=firestore.FieldFilter('time_slot', '<', end_of_weekend))\
+                                            .order_by('time_slot')\
+                                            .limit(1)
             
             weekend_docs = weekend_query.stream()
             appointment_doc = next(weekend_docs, None)
 
             # 2. If a weekend appointment is not found, fall back to any available appointment within 30 days.
             if not appointment_doc:
-                any_day_query = availability_ref.where('doctor_id', '==', doctor_id)\
-                                               .where('is_booked', '==', False)\
-                                               .where('time_slot', '>', now)\
-                                               .where('time_slot', '<', thirty_days_from_now)\
-                                               .order_by('time_slot')\
-                                               .limit(1)
+                any_day_query = availability_ref.where(filter=firestore.FieldFilter('doctor_id', '==', doctor_id))\
+                                                .where(filter=firestore.FieldFilter('is_booked', '==', False))\
+                                                .where(filter=firestore.FieldFilter('time_slot', '>', now))\
+                                                .where(filter=firestore.FieldFilter('time_slot', '<', thirty_days_from_now))\
+                                                .order_by('time_slot')\
+                                                .limit(1)
                 any_day_docs = any_day_query.stream()
                 appointment_doc = next(any_day_docs, None)
                 
@@ -110,7 +110,7 @@ def check_insurance_and_cost(doctor_name, insurance_provider):
     """
     try:
         doctors_ref = db.collection('doctors')
-        doctor_query = doctors_ref.where('name', '==', doctor_name).limit(1)
+        doctor_query = doctors_ref.where(filter=firestore.FieldFilter('name', '==', doctor_name)).limit(1)
         doctor_docs = doctor_query.stream()
         doctor_doc = next(doctor_docs, None)
 
@@ -148,10 +148,10 @@ def find_user_email(first_name, last_name, dob):
     """
     try:
         patients_ref = db.collection('patients')
-        # Updated query to match the 'firstName' and 'lastName' fields in the database.
-        user_query = patients_ref.where('firstName', '==', first_name)\
-                                 .where('lastName', '==', last_name)\
-                                 .where('dob', '==', dob).limit(1)
+        # Updated query to use firestore.FieldFilter to resolve UserWarning.
+        user_query = patients_ref.where(filter=firestore.FieldFilter('firstName', '==', first_name))\
+                                 .where(filter=firestore.FieldFilter('lastName', '==', last_name))\
+                                 .where(filter=firestore.FieldFilter('dob', '==', dob)).limit(1)
         user_docs = user_query.stream()
         user_doc = next(user_docs, None)
         
@@ -242,7 +242,7 @@ def book_appointment(doctor_name, time_slot, user_name, user_email):
     try:
         # Step 1: Find the doctor's document ID from their name
         doctors_ref = db.collection('doctors')
-        doctor_query = doctors_ref.where('name', '==', doctor_name).limit(1)
+        doctor_query = doctors_ref.where(filter=firestore.FieldFilter('name', '==', doctor_name)).limit(1)
         doctor_docs = list(doctor_query.stream())
 
         if not doctor_docs:
@@ -253,9 +253,9 @@ def book_appointment(doctor_name, time_slot, user_name, user_email):
 
         # Step 2: Find the specific time slot document using both doctor_id and time_slot
         availability_ref = db.collection('doctor_availability')
-        appointment_query = availability_ref.where('doctor_id', '==', doctor_id)\
-                                           .where('time_slot', '==', time_slot)\
-                                           .limit(1)
+        appointment_query = availability_ref.where(filter=firestore.FieldFilter('doctor_id', '==', doctor_id))\
+                                            .where(filter=firestore.FieldFilter('time_slot', '==', time_slot))\
+                                            .limit(1)
         
         appointment_docs = list(appointment_query.stream())
         if not appointment_docs:
@@ -394,7 +394,7 @@ def webhook():
         # --- ORIGINAL LOGIC FOR INSURANCE CHECK ---
         # This branch is triggered after the user selects a doctor and provides insurance info.
         if selected_doctor_name_choice and insurance_provider:
-            # Map the user's choice (e.g., "second doctor") to the actual doctor's name
+            # Map the user's choice (e.g., "first doctor") to the actual doctor's name
             try:
                 # Find the index of the number word (e.g., "first" -> 0, "second" -> 1)
                 number_words = ["first", "second", "third", "fourth", "fifth"]
