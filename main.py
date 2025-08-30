@@ -1,182 +1,201 @@
-import os
 import json
+from datetime import datetime, timedelta
+import firebase_admin
+from firebase_admin import credentials, firestore
 from flask import Flask, request, jsonify
-import psycopg2
-from psycopg2 import Error as pg_error # Alias the module for cleaner error handling
-from psycopg2 import sql
+
+# Replace 'path/to/your/serviceAccountKey.json' with the actual path to your
+# Firebase service account key file. This is required for server-side authentication.
+# For Google Cloud deployments, you can use the default credentials.
+# Check https://firebase.google.com/docs/admin/setup for more info.
+try:
+    # Use credentials from a service account file for local development.
+    cred = credentials.Certificate('path/to/your/serviceAccountKey.json')
+    firebase_admin.initialize_app(cred)
+except ValueError:
+    # This branch handles the case when the app is running in a GCP environment
+    # where credentials are automatically provided.
+    firebase_admin.initialize_app()
+
+# Initialize the Firestore database client.
+db = firestore.client()
 
 app = Flask(__name__)
 
-# This is the main webhook endpoint for Dialogflow CX.
+def get_available_doctor(specialty):
+    """
+    Queries Firestore for an available doctor of a specific specialty and their available time slot.
+    The query now prioritizes finding a weekend appointment first, then falls back to any day.
+    
+    Args:
+        specialty (str): The medical specialty to search for (e.g., 'gp', 'specialist').
+        
+    Returns:
+        dict: A dictionary containing the doctor's name, clinic address, and an available slot, or None if not found.
+    """
+    try:
+        # Step 1: Find a doctor document by specialty.
+        doctors_ref = db.collection('doctors')
+        query = doctors_ref.where('specialty', '==', specialty).limit(1)
+        
+        docs = query.stream()
+        
+        # Get the first doctor that matches the specialty.
+        doctor_doc = next(docs, None)
+        
+        if not doctor_doc:
+            return None # No doctor found for this specialty.
+            
+        doctor_id = doctor_doc.id
+        doctor_data = doctor_doc.to_dict()
+        
+        # Step 2: Find the next available time slot for this doctor.
+        # This requires your 'doctor_availability' documents to have a 'time_slot'
+        # field that is a Firestore Timestamp or Python datetime object.
+        availability_ref = db.collection('doctor_availability')
+        
+        # Define a time window for the search (e.g., next 30 days).
+        now = datetime.now()
+        thirty_days_from_now = now + timedelta(days=30)
+        
+        # Find the next Saturday and Sunday.
+        days_until_saturday = (5 - now.weekday() + 7) % 7
+        next_saturday = now + timedelta(days=days_until_saturday)
+        start_of_weekend = datetime(next_saturday.year, next_saturday.month, next_saturday.day)
+        end_of_weekend = start_of_weekend + timedelta(days=2) # Covers Saturday and Sunday
+        
+        # 1. First, try to find an available appointment on the upcoming weekend.
+        weekend_query = availability_ref.where('doctor_id', '==', doctor_id)\
+                                        .where('is_booked', '==', False)\
+                                        .where('time_slot', '>', start_of_weekend)\
+                                        .where('time_slot', '<', end_of_weekend)\
+                                        .order_by('time_slot')\
+                                        .limit(1)
+        
+        weekend_docs = weekend_query.stream()
+        appointment_doc = next(weekend_docs, None)
+
+        # 2. If a weekend appointment is not found, fall back to any available appointment within 30 days.
+        if not appointment_doc:
+            any_day_query = availability_ref.where('doctor_id', '==', doctor_id)\
+                                            .where('is_booked', '==', False)\
+                                            .where('time_slot', '>', now)\
+                                            .where('time_slot', '<', thirty_days_from_now)\
+                                            .order_by('time_slot')\
+                                            .limit(1)
+            any_day_docs = any_day_query.stream()
+            appointment_doc = next(any_day_docs, None)
+            
+        if not appointment_doc:
+            return None # No available slots found in either query.
+        
+        appointment_data = appointment_doc.to_dict()
+
+        # Combine the information into a single result.
+        return {
+            "name": doctor_data.get('name'),
+            "clinic_address": doctor_data.get('clinic_address'),
+            "time_slot": appointment_data.get('time_slot')
+        }
+        
+    except Exception as e:
+        print(f"Error querying Firestore: {e}")
+        return None
+
 @app.route('/', methods=['POST'])
 def webhook():
     """
-    Handles incoming webhook requests from Dialogflow CX.
-    It analyzes the provided symptoms and duration to determine a course of action.
+    This function handles the incoming webhook request from Dialogflow CX.
+    It processes the user's symptoms and returns a result, now including
+    doctor information from Firestore.
     """
-    request_data = request.get_json(silent=True)
-    
-    # Log the incoming request for debugging purposes.
-    # print(json.dumps(request_data, indent=2))
-
-    # Safely extract parameters from the request.
     try:
-        # Get session parameters.
-        parameters = request_data['sessionInfo']['parameters']
-        
-        # Extract the symptom duration and symptom list.
-        # The duration is expected to be a number.
-        duration_days = int(parameters.get('symptom_duration_days', 0))
-        # The symptoms list is a string and should be converted to lowercase for case-insensitive matching.
-        symptom_text = parameters.get('symptoms_list', '').lower()
+        req = request.get_json(silent=True, force=True)
+        print("Webhook Request:")
+        print(json.dumps(req, indent=2))
 
-    except (KeyError, ValueError) as e:
-        # Handle cases where parameters are missing or malformed.
-        print(f"Error parsing parameters: {e}")
+        session_params = req.get('sessionInfo', {}).get('parameters', {})
+        symptoms_list = session_params.get('symptoms_list', [])
+        symptom_duration_days = session_params.get('symptom_duration_days', 0)
+
+        symptom_result = "self_care"
+        symptom_text = ' '.join(symptoms_list).lower()
+        
+        if "emergency" in symptom_text or "unconscious" in symptom_text or "severe breathing" in symptom_text:
+            symptom_result = "emergency"
+        elif symptom_duration_days >= 14:
+            symptom_result = "specialist"
+        elif symptom_duration_days >= 3:
+            symptom_result = "gp"
+        else:
+            symptom_result = "self_care"
+        
+        # New logic: Look up doctor availability based on the symptom result.
+        specialty_map = {
+            "gp": "gp",
+            "specialist": "specialist"
+        }
+        
+        doctor_info = None
+        if symptom_result in specialty_map:
+            doctor_info = get_available_doctor(specialty_map[symptom_result])
+
+        # Prepare the webhook response.
+        response_text = f"Analyzing your symptoms... Result is: {symptom_result}"
+        
+        # If a doctor and an appointment were found, include the details in the response.
+        if doctor_info:
+            appointment_time = doctor_info.get('time_slot')
+            formatted_date = appointment_time.strftime("%A, %B %d, %Y")
+            formatted_time = appointment_time.strftime("%I:%M %p")
+            response_text = f"A doctor is available. We recommend you see a {specialty_map[symptom_result]}. Dr. {doctor_info.get('name')} has an opening on {formatted_date} at {formatted_time} at their clinic on {doctor_info.get('clinic_address')}."
+        elif symptom_result in specialty_map:
+            response_text = f"There are no available {specialty_map[symptom_result]}s at this time. Please check again later."
+        elif symptom_result == "emergency":
+            response_text = "Your symptoms indicate an emergency. Please seek immediate medical attention."
+        else:
+            response_text = "Your symptoms appear to be mild. We recommend self-care measures."
+
+        # This webhook can also set parameters to guide the Dialogflow flow.
         response = {
-            'fulfillment_response': {
-                'messages': [
+            "sessionInfo": {
+                "parameters": {
+                    "symptom_result": symptom_result,
+                    "doctor_available": bool(doctor_info),
+                    "doctor_name": doctor_info.get('name') if doctor_info else None,
+                    "appointment_details": {
+                        "name": doctor_info.get('name'),
+                        "address": doctor_info.get('clinic_address'),
+                        "time": doctor_info.get('time_slot').isoformat() if doctor_info else None
+                    } if doctor_info else None
+                }
+            },
+            "fulfillmentResponse": {
+                "messages": [
                     {
-                        'text': {
-                            'text': [
-                                'I am sorry, but I am unable to process your request at this time. Please try again later.'
-                            ]
+                        "text": {
+                            "text": [response_text]
                         }
                     }
                 ]
             }
         }
+        
         return jsonify(response)
 
-    # --- Core Logic for Determining Symptom Result and Response Text ---
-    # Define a default result for unknown cases.
-    symptom_result = "self_care"
-    response_text = "For symptoms lasting less than 3 days, we recommend self-care. It's often helpful to rest, stay hydrated by drinking plenty of water, and consider using over-the-counter remedies if needed. Keep an eye on your symptoms, and if they persist or get worse after 3 days, please see a GP."
-
-    # Define keywords for emergency symptoms.
-    emergency_keywords = ["chest pain", "difficulty breathing", "severe bleeding"]
-
-    # First, check for emergency conditions. This is the highest priority.
-    is_emergency = any(keyword in symptom_text for keyword in emergency_keywords)
-
-    if is_emergency:
-        symptom_result = "emergency"
-        response_text = "Your symptoms may be a medical emergency. Please seek immediate medical attention. Go to your nearest emergency service or A&E at 123 Baker Street, London, UK."
-    # The order of the following 'elif' statements is crucial.
-    # Check for the longest duration first (specialist), then the shorter duration (GP).
-    elif duration_days >= 14:
-        # If symptoms have lasted for 2 weeks or more, refer to a specialist.
-        symptom_result = "specialist"
-        response_text = "We recommend you book an appointment to see a specialist as your symptoms have been persistent for more than 14 days."
-    elif duration_days >= 3:
-        # If symptoms have lasted for more than 3 days but less than 2 weeks, refer to a GP.
-        symptom_result = "gp"
-        response_text = "We recommend you book an appointment to see a GP as your symptoms have been persistent for more than 3 days."
-    else:
-        # For symptoms lasting less than 3 days, recommend self-care.
-        symptom_result = "self_care"
-        response_text = "For symptoms lasting less than 3 days, we recommend self-care. It's often helpful to rest, stay hydrated by drinking plenty of water, and consider using over-the-counter remedies if needed. Keep an eye on your symptoms, and if they persist or get worse after 3 days, please see a GP."
-    
-    def get_db_secrets():
-        """
-        Retrieves database credentials from environment variables set by Secret Manager.
-        """
-        return {
-            "host": os.environ.get("DB_HOST"),
-            "database": os.environ.get("DB_NAME"),
-            "user": os.environ.get("DB_USER"),
-            "password": os.environ.get("DB_PASS")
-        }
-
-    # If a doctor is recommended, try to find an available doctor.
-    if symptom_result in ["gp", "specialist"]:
-        try:
-            # Retrieve secrets from the environment variables.
-            db_secrets = get_db_secrets()
-
-            # Connect to the PostgreSQL database using the retrieved secrets.
-            conn = psycopg2.connect(
-                host=db_secrets["host"],
-                database=db_secrets["database"],
-                user=db_secrets["user"],
-                password=db_secrets["password"],
-                connect_timeout=15 # Added a 15-second timeout for the connection.
-            )
-            cur = conn.cursor()
-
-            # Define the query based on the symptom result.
-            if symptom_result == "gp":
-                # Find GPs and their availability.
-                query = """
-                SELECT d.name, d.specialization, da.day_of_week, da.time_slot
-                FROM doctors d
-                JOIN doctor_availability da ON d.id = da.doctor_id
-                WHERE d.specialization = 'General Practitioner'
-                ORDER BY da.day_of_week, da.time_slot
-                LIMIT 3;
-                """
-            else: # specialist
-                # Find Specialists and their availability.
-                query = """
-                SELECT d.name, d.specialization, da.day_of_week, da.time_slot
-                FROM doctors d
-                JOIN doctor_availability da ON d.id = da.doctor_id
-                WHERE d.specialization != 'General Practitioner'
-                ORDER BY da.day_of_week, da.time_slot
-                LIMIT 3;
-                """
-            
-            cur.execute(query)
-            doctors = cur.fetchall()
-            
-            # Format the list of doctors into a readable string.
-            if doctors:
-                doctor_list = "\n\nAvailable doctors and their specialties:\n"
-                for doctor in doctors:
-                    name, specialization, day_of_week, time_slot = doctor
-                    doctor_list += f"- {name} ({specialization}) available on {day_of_week} at {time_slot}\n"
-                response_text += doctor_list
-            else:
-                response_text += "\n\nNo doctors are currently available."
-
-            cur.close()
-            conn.close()
-
-        except pg_error as e:
-            # Catch specific psycopg2 errors for more descriptive logs.
-            print(f"Database connection or query error: {e}")
-            response_text += "\n\nI am sorry, but I am unable to check for doctor availability at this time."
-        except Exception as e:
-            # Catch other potential errors, such as missing environment variables.
-            print(f"Error retrieving database secrets or connecting: {e}")
-            response_text += "\n\nI am sorry, but I was unable to connect to the database securely. Please make sure the environment variables are correctly set."
-
-
-    # --- Construct the JSON response for Dialogflow CX ---
-    response = {
-        'sessionInfo': {
-            'parameters': {
-                'symptom_result': symptom_result
-            }
-        },
-        'fulfillment_response': {
-            'messages': [
-                {
-                    'text': {
-                        'text': [
-                            response_text
-                        ]
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return jsonify({
+            "fulfillmentResponse": {
+                "messages": [
+                    {
+                        "text": {
+                            "text": ["An error occurred while processing your request."]
+                        }
                     }
-                }
-            ]
-        }
-    }
-    
-    # Return the response as JSON.
-    return jsonify(response)
+                ]
+            }
+        }), 500
 
-# The following is a simple run block for local testing.
 if __name__ == '__main__':
-    # Get port from environment variable, or use a default.
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port)
+    app.run(debug=True, port=8000)
