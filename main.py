@@ -340,8 +340,26 @@ def webhook():
                 first_name = name_parts[0]
                 last_name = name_parts[1] if len(name_parts) > 1 else ""
                 
+                # Parse and format the date of birth for the database query.
+                try:
+                    dob_obj = datetime.strptime(dob, "%m/%d/%Y")
+                    formatted_dob = dob_obj.strftime("%Y-%m-%d")
+                except ValueError:
+                    response_text = "I'm sorry, the date of birth format is incorrect. Please use MM/DD/YYYY."
+                    return jsonify({
+                        "fulfillmentResponse": {
+                            "messages": [
+                                {
+                                    "text": {
+                                        "text": [response_text]
+                                    }
+                                }
+                            ]
+                        }
+                    })
+
                 # Find the user's email in the database using the updated function.
-                user_email = find_user_email(first_name, last_name, dob)
+                user_email = find_user_email(first_name, last_name, formatted_dob)
 
                 if user_email:
                     # Convert the Firestore timestamp back to a datetime object
