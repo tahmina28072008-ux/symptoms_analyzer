@@ -4,18 +4,25 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from flask import Flask, request, jsonify
 
-# Replace 'path/to/your/serviceAccountKey.json' with the actual path to your
-# Firebase service account key file. This is required for server-side authentication.
-# For Google Cloud deployments, you can use the default credentials.
-# Check https://firebase.google.com/docs/admin/setup for more info.
+# This try-except block handles credential initialization.
+# For local development, it will look for a service account key file.
+# When deployed to a Google Cloud service like Cloud Run, it will
+# automatically use the default service account credentials
+# provided by the environment, making the key file unnecessary.
 try:
     # Use credentials from a service account file for local development.
+    # Replace 'path/to/your/serviceAccountKey.json' with your actual key's path.
     cred = credentials.Certificate('path/to/your/serviceAccountKey.json')
     firebase_admin.initialize_app(cred)
 except ValueError:
     # This branch handles the case when the app is running in a GCP environment
     # where credentials are automatically provided.
     firebase_admin.initialize_app()
+except FileNotFoundError:
+    # This handles the case where the key file is not found, which is expected
+    # when you're deploying to Cloud Run. It will fall back to using default credentials.
+    firebase_admin.initialize_app()
+
 
 # Initialize the Firestore database client.
 db = firestore.client()
