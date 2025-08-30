@@ -242,36 +242,31 @@ def book_appointment(appointment_doc_id, user_name, user_email):
     Returns:
         bool: True if the booking was successful, False otherwise.
     """
+    print(f"Attempting to book appointment with ID: {appointment_doc_id}")
     try:
         # Get the reference to the specific appointment document.
         appointment_doc_ref = db.collection('doctor_availability').document(appointment_doc_id)
-
-        # Use a transaction to ensure atomic update. This prevents race conditions.
-        @firestore.transactional
-        def update_in_transaction(transaction, appointment_ref):
-            snapshot = appointment_ref.get(transaction=transaction)
-            if snapshot.get('is_booked') == False:
-                transaction.update(appointment_ref, {'is_booked': True})
-                return True
+        
+        # Check if the document exists and is not already booked.
+        doc_snapshot = appointment_doc_ref.get()
+        if not doc_snapshot.exists or doc_snapshot.get('is_booked'):
+            print("Appointment is either non-existent or already booked.")
             return False
 
-        # Run the transaction.
-        success = update_in_transaction(db.transaction(), appointment_doc_ref)
+        # Update the document to mark it as booked.
+        appointment_doc_ref.update({'is_booked': True})
+        print("Appointment document updated successfully.")
 
-        if success:
-            # Create a new document in the 'appointments' collection.
-            appointments_ref = db.collection('appointments')
-            appointments_ref.add({
-                'user_name': user_name,
-                'user_email': user_email,
-                'time_slot_ref': appointment_doc_ref,
-                'booking_date': datetime.now()
-            })
-            print(f"Appointment booked with document ID: {appointment_doc_id}")
-            return True
-        else:
-            print("Appointment already booked by another user.")
-            return False
+        # Create a new document in the 'appointments' collection.
+        appointments_ref = db.collection('appointments')
+        appointments_ref.add({
+            'user_name': user_name,
+            'user_email': user_email,
+            'time_slot_ref': appointment_doc_ref,
+            'booking_date': datetime.now()
+        })
+        print(f"Appointment record created for user {user_name}.")
+        return True
     
     except Exception as e:
         print(f"Error booking appointment: {e}")
@@ -280,7 +275,7 @@ def book_appointment(appointment_doc_id, user_name, user_email):
 def _get_date_string_from_dob_param(dob_param):
     """
     Helper function to robustly parse the date from a Dialogflow parameter.
-    It handles both simple strings and structured dictionary formats.
+    It handles simple strings, structured dictionary formats, and Firestore Timestamps.
     """
     if isinstance(dob_param, str):
         # Handle simple MM/DD/YYYY strings
@@ -294,9 +289,15 @@ def _get_date_string_from_dob_param(dob_param):
                 return dob_obj.strftime("%Y-%m-%d")
             except ValueError:
                 return None
-    elif isinstance(dob_param, dict) and 'date' in dob_param:
-        # Some Dialogflow configurations send a structured dict.
-        return dob_param['date']
+    elif isinstance(dob_param, dict) and 'year' in dob_param and 'month' in dob_param and 'day' in dob_param:
+        try:
+            # Reconstruct the date from the dictionary and format it as YYYY-MM-DD
+            year = int(dob_param['year'])
+            month = int(dob_param['month'])
+            day = int(dob_param['day'])
+            return f"{year:04d}-{month:02d}-{day:02d}"
+        except (ValueError, TypeError):
+            return None
     
     return None
 
@@ -317,7 +318,8 @@ def webhook():
         # Safely extract parameters from the session.
         session_params = req.get('sessionInfo', {}).get('parameters', {})
         print(f"Webhook received parameters: {session_params}")
-
+        print("-" * 50)
+        
         symptoms_list = session_params.get('symptoms_list', [])
         symptom_duration_days = session_params.get('symptom_duration_days', 0)
         
@@ -335,6 +337,9 @@ def webhook():
         if booking_confirmed:
             print("Entering appointment confirmation logic block...")
             selected_doctor_object = session_params.get('selected_doctor_object', {})
+            
+            # This is a critical debugging check!
+            print(f"Attempting to book: selected_doctor_object={selected_doctor_object}, user_name={user_name}, dob={dob}")
             
             if selected_doctor_object and user_name and dob:
                 name_parts = user_name.split(' ', 1)
@@ -355,26 +360,31 @@ def webhook():
                 user_email = find_user_email(first_name, last_name, formatted_dob)
 
                 if user_email:
-                    appointment_doc_id = selected_doctor_object.get('id')
-                    appointment_booked = book_appointment(appointment_doc_id, user_name, user_email)
+                    # The `id` is a string, which is what we need.
+                    appointment_doc_id = selected_doctor_object.get('id') 
                     
-                    if appointment_booked:
-                        # Convert Firestore timestamp to a Python datetime object for the email.
-                        time_slot_seconds = selected_doctor_object.get('time_slot', {}).get('_seconds', 0)
-                        appointment_time = datetime.fromtimestamp(time_slot_seconds)
-                        
-                        email_sent = send_confirmation_email(user_email, {
-                            "doctor_name": selected_doctor_object.get("name"),
-                            "time_slot": appointment_time,
-                            "clinic_address": selected_doctor_object.get("clinic_address")
-                        })
-                        
-                        if email_sent:
-                            response_text = f"Your appointment with Dr. {selected_doctor_object.get('name')} has been successfully booked! A confirmation email has been sent to {user_email}."
+                    if appointment_doc_id:
+                        appointment_booked = book_appointment(appointment_doc_id, user_name, user_email)
+                    
+                        if appointment_booked:
+                            # The `time_slot` here is a string, so we need to parse it.
+                            time_slot_str = selected_doctor_object.get('time_slot')
+                            appointment_time = datetime.strptime(time_slot_str, '%a, %d %b %Y %H:%M:%S %Z')
+                            
+                            email_sent = send_confirmation_email(user_email, {
+                                "doctor_name": selected_doctor_object.get("name"),
+                                "time_slot": appointment_time,
+                                "clinic_address": selected_doctor_object.get("clinic_address")
+                            })
+                            
+                            if email_sent:
+                                response_text = f"Your appointment with Dr. {selected_doctor_object.get('name')} has been successfully booked! A confirmation email has been sent to {user_email}."
+                            else:
+                                response_text = f"Your appointment with Dr. {selected_doctor_object.get('name')} has been booked! However, there was an issue sending the confirmation email."
                         else:
-                            response_text = f"Your appointment with Dr. {selected_doctor_object.get('name')} has been booked! However, there was an issue sending the confirmation email."
+                            response_text = "I'm sorry, that appointment time is no longer available. Please try again."
                     else:
-                        response_text = "I'm sorry, that appointment time is no longer available. Please try again."
+                        response_text = "I'm sorry, I could not find the appointment details. Please try again."
                 else:
                     response_text = "I'm sorry, I could not find your information in the database. Please ensure your name and date of birth are correct."
             else:
@@ -400,6 +410,9 @@ def webhook():
         # This branch is triggered when the user selects a doctor and provides an insurance provider.
         if selected_doctor_choice and insurance_provider:
             print("Entering insurance check logic block...")
+            # This is a critical debugging check!
+            print(f"Doctor Choice: {selected_doctor_choice}, Insurance: {insurance_provider}")
+            
             # Match the user's "first", "second", etc. choice to the actual doctor object.
             try:
                 number_words = ["first", "second", "third", "fourth", "fifth"]
