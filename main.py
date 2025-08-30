@@ -150,6 +150,7 @@ def webhook():
         # New parameters to handle doctor selection and insurance check
         selected_doctor_name = session_params.get('selected_doctor_name', None)
         insurance_provider = session_params.get('insurance_provider', None)
+        doctor_info_list = session_params.get('doctor_info_list', [])
 
         symptom_result = "self_care"
         symptom_text = ' '.join(symptoms_list).lower()
@@ -166,6 +167,19 @@ def webhook():
         # --- NEW LOGIC FOR INSURANCE CHECK ---
         # This branch is triggered after the user selects a doctor and provides insurance info.
         if selected_doctor_name and insurance_provider:
+            # Map the user's choice (e.g., "second doctor") to the actual doctor's name
+            try:
+                # Find the index of the number word (e.g., "first" -> 0, "second" -> 1)
+                number_words = ["first", "second", "third", "fourth", "fifth"]
+                choice_index = number_words.index(selected_doctor_name.lower().split()[0])
+                if choice_index < len(doctor_info_list):
+                    # Update selected_doctor_name to the actual name from the list
+                    selected_doctor_name = doctor_info_list[choice_index].get("name")
+            except (ValueError, IndexError):
+                # If the user's choice is not a number word (e.g., they said the name directly),
+                # we don't need to do anything.
+                pass
+
             status, cost, copay = check_insurance_and_cost(selected_doctor_name, insurance_provider)
             response_text = f"For your visit with {selected_doctor_name}, the status is: {status}"
             if cost:
