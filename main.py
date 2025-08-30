@@ -101,6 +101,36 @@ def get_available_doctors(specialty):
         print(f"Error querying Firestore: {e}")
         return []
 
+def check_insurance_and_cost(doctor_name, insurance_provider):
+    """
+    Checks a doctor's accepted insurance plans from Firestore and returns the coverage status.
+    """
+    try:
+        doctors_ref = db.collection('doctors')
+        doctor_query = doctors_ref.where('name', '==', doctor_name).limit(1)
+        doctor_docs = doctor_query.stream()
+        doctor_doc = next(doctor_docs, None)
+
+        if not doctor_doc:
+            return "Sorry, I can't find information for that doctor.", None, None
+
+        doctor_data = doctor_doc.to_dict()
+        accepted_insurances = doctor_data.get("accepted_insurances", [])
+        
+        # Hardcoded costs for demonstration. In a real app, this would be dynamic.
+        visit_cost = "$50"
+        copay = "$25"
+
+        if insurance_provider in accepted_insurances:
+            return "Your visit is covered by your insurance.", visit_cost, copay
+        else:
+            return "This doctor does not accept your insurance.", visit_cost, None
+
+    except Exception as e:
+        print(f"Error checking insurance: {e}")
+        return "An error occurred while checking insurance.", None, None
+
+
 @app.route('/', methods=['POST'])
 def webhook():
     """
@@ -116,6 +146,10 @@ def webhook():
         session_params = req.get('sessionInfo', {}).get('parameters', {})
         symptoms_list = session_params.get('symptoms_list', [])
         symptom_duration_days = session_params.get('symptom_duration_days', 0)
+        
+        # New parameters to handle doctor selection and insurance check
+        selected_doctor_name = session_params.get('selected_doctor_name', None)
+        insurance_provider = session_params.get('insurance_provider', None)
 
         symptom_result = "self_care"
         symptom_text = ' '.join(symptoms_list).lower()
@@ -129,18 +163,42 @@ def webhook():
         else:
             symptom_result = "self_care"
         
-        # New logic: Look up doctor availability based on the symptom result.
+        # --- NEW LOGIC FOR INSURANCE CHECK ---
+        # This branch is triggered after the user selects a doctor and provides insurance info.
+        if selected_doctor_name and insurance_provider:
+            status, cost, copay = check_insurance_and_cost(selected_doctor_name, insurance_provider)
+            response_text = f"For your visit with {selected_doctor_name}, the status is: {status}"
+            if cost:
+                response_text += f"\n\nEstimated total cost: {cost}"
+            if copay:
+                response_text += f"\nYour estimated copay is: {copay}"
+            
+            # Return this response immediately, skipping the symptom analysis.
+            response = {
+                "fulfillmentResponse": {
+                    "messages": [
+                        {
+                            "text": {
+                                "text": [response_text]
+                            }
+                        }
+                    ]
+                }
+            }
+            return jsonify(response)
+        
+        # --- ORIGINAL SYMPTOM ANALYSIS LOGIC ---
+        # This is the initial flow to analyze symptoms and find doctors.
         specialty_map = {
             "gp": "gp",
             "specialist": "specialist"
         }
         
-        doctor_info = None
         available_doctors = []
         if symptom_result in specialty_map:
             available_doctors = get_available_doctors(specialty_map[symptom_result])
 
-        # Prepare the webhook response.
+        # Prepare the webhook response for symptom analysis.
         response_text = f"Analyzing your symptoms... Result is: {symptom_result}"
         
         # If a doctor and an appointment were found, include the details in the response.
