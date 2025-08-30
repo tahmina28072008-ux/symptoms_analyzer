@@ -1,4 +1,7 @@
 import json
+import os
+import smtplib
+from email.message import EmailMessage
 from datetime import datetime, timedelta
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -129,6 +132,154 @@ def check_insurance_and_cost(doctor_name, insurance_provider):
     except Exception as e:
         print(f"Error checking insurance: {e}")
         return "An error occurred while checking insurance.", None, None
+    
+def find_user_email(name, dob):
+    """
+    Looks up a user's email address in the 'patients' Firestore collection
+    based on their name and date of birth.
+    
+    Args:
+        name (str): The user's name.
+        dob (str): The user's date of birth.
+        
+    Returns:
+        str: The user's email address if found, otherwise None.
+    """
+    try:
+        patients_ref = db.collection('patients')
+        user_query = patients_ref.where('name', '==', name).where('dob', '==', dob).limit(1)
+        user_docs = user_query.stream()
+        user_doc = next(user_docs, None)
+        
+        if user_doc:
+            return user_doc.to_dict().get('email')
+        
+        return None
+    
+    except Exception as e:
+        print(f"Error finding user: {e}")
+        return None
+
+def send_confirmation_email(recipient_email, appointment_details):
+    """
+    Sends a confirmation email using an SMTP server.
+    
+    Args:
+        recipient_email (str): The email address to send the confirmation to.
+        appointment_details (dict): A dictionary with appointment information.
+        
+    Returns:
+        bool: True if the email was sent successfully, False otherwise.
+    """
+    try:
+        # Get SMTP credentials and server details from environment variables.
+        # This is the recommended way to handle sensitive information.
+        smtp_host = os.environ.get('SMTP_HOST')
+        smtp_port = int(os.environ.get('SMTP_PORT', 587))
+        smtp_user = os.environ.get('SMTP_USER')
+        smtp_pass = os.environ.get('SMTP_PASS')
+
+        if not all([smtp_host, smtp_user, smtp_pass]):
+            print("SMTP environment variables are not set. Cannot send email.")
+            return False
+
+        # Create the email message.
+        msg = EmailMessage()
+        msg['Subject'] = 'Your Appointment Confirmation'
+        msg['From'] = smtp_user
+        msg['To'] = recipient_email
+        
+        doctor_name = appointment_details.get('doctor_name')
+        time_slot = appointment_details.get('time_slot')
+        clinic_address = appointment_details.get('clinic_address')
+        
+        body = f"""
+        Hello,
+
+        This email confirms your appointment with Dr. {doctor_name}.
+
+        Appointment Details:
+        Date & Time: {time_slot.strftime("%A, %B %d, %Y at %I:%M %p")}
+        Location: {clinic_address}
+
+        If you have any questions, please contact the clinic directly.
+
+        Thank you,
+        The Healthcare Team
+        """
+        msg.set_content(body)
+
+        # Connect to the SMTP server and send the email.
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.starttls() # Secure the connection
+            server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+            print(f"Confirmation email sent to {recipient_email}")
+            return True
+            
+    except Exception as e:
+        print(f"Error sending confirmation email: {e}")
+        return False
+
+def book_appointment(doctor_name, time_slot, user_name, user_email):
+    """
+    Updates the Firestore database to mark a specific appointment as booked
+    and creates a new appointment record for the user.
+    
+    Args:
+        doctor_name (str): The name of the doctor.
+        time_slot (datetime): The datetime object of the appointment to book.
+        user_name (str): The name of the user booking the appointment.
+        user_email (str): The email of the user booking the appointment.
+        
+    Returns:
+        bool: True if the booking was successful, False otherwise.
+    """
+    try:
+        # Step 1: Find the doctor's document ID from their name
+        doctors_ref = db.collection('doctors')
+        doctor_query = doctors_ref.where('name', '==', doctor_name).limit(1)
+        doctor_docs = list(doctor_query.stream())
+
+        if not doctor_docs:
+            print(f"Doctor not found: {doctor_name}")
+            return False
+        
+        doctor_id = doctor_docs[0].id
+
+        # Step 2: Find the specific time slot document using both doctor_id and time_slot
+        availability_ref = db.collection('doctor_availability')
+        appointment_query = availability_ref.where('doctor_id', '==', doctor_id)\
+                                            .where('time_slot', '==', time_slot)\
+                                            .limit(1)
+        
+        appointment_docs = list(appointment_query.stream())
+        if not appointment_docs:
+            print(f"Appointment not found for {doctor_name} at {time_slot}")
+            return False
+
+        appointment_doc_ref = appointment_docs[0].reference
+
+        # Step 3: Update the doctor's availability document to mark it as booked.
+        appointment_doc_ref.update({'is_booked': True})
+
+        # Step 4: Create a new document in the 'appointments' collection.
+        # This logs the appointment for the user's records.
+        appointments_ref = db.collection('appointments')
+        appointments_ref.add({
+            'doctor_name': doctor_name,
+            'user_name': user_name,
+            'user_email': user_email,
+            'time_slot': time_slot,
+            'booking_date': datetime.now()
+        })
+        
+        print(f"Appointment booked for {doctor_name} at {time_slot}")
+        return True
+    
+    except Exception as e:
+        print(f"Error booking appointment: {e}")
+        return False
 
 
 @app.route('/', methods=['POST'])
@@ -147,10 +298,20 @@ def webhook():
         symptoms_list = session_params.get('symptoms_list', [])
         symptom_duration_days = session_params.get('symptom_duration_days', 0)
         
-        # New parameters to handle doctor selection and insurance check
-        selected_doctor_name = session_params.get('selected_doctor_name', None)
+        # New parameters to handle doctor selection, insurance, and user details
+        selected_doctor_name_choice = session_params.get('selected_doctor_name', None)
         insurance_provider = session_params.get('insurance_provider', None)
         doctor_info_list = session_params.get('doctor_info_list', [])
+        
+        # New parameters from user input
+        user_name = session_params.get('user_name', None)
+        dob = session_params.get('dob', None)
+        
+        # New parameter for booking confirmation
+        booking_confirmed = session_params.get('booking_confirmed', False)
+
+        # Initialize doctor object to hold the full details
+        selected_doctor_object = None
 
         symptom_result = "self_care"
         symptom_text = ' '.join(symptoms_list).lower()
@@ -164,31 +325,51 @@ def webhook():
         else:
             symptom_result = "self_care"
         
-        # --- NEW LOGIC FOR INSURANCE CHECK ---
-        # This branch is triggered after the user selects a doctor and provides insurance info.
-        if selected_doctor_name and insurance_provider:
-            # Map the user's choice (e.g., "second doctor") to the actual doctor's name
-            try:
-                # Find the index of the number word (e.g., "first" -> 0, "second" -> 1)
-                number_words = ["first", "second", "third", "fourth", "fifth"]
-                choice_index = number_words.index(selected_doctor_name.lower().split()[0])
-                if choice_index < len(doctor_info_list):
-                    # Update selected_doctor_name to the actual name from the list
-                    selected_doctor_name = doctor_info_list[choice_index].get("name")
-            except (ValueError, IndexError):
-                # If the user's choice is not a number word (e.g., they said the name directly),
-                # we don't need to do anything.
-                pass
-
-            status, cost, copay = check_insurance_and_cost(selected_doctor_name, insurance_provider)
-            response_text = f"For your visit with {selected_doctor_name}, the status is: {status}"
-            if cost:
-                response_text += f"\n\nEstimated total cost: {cost}"
-            if copay:
-                response_text += f"\nYour estimated copay is: {copay}"
+        # --- NEW LOGIC FOR BOOKING CONFIRMATION ---
+        # This branch is triggered after the user confirms they want to book.
+        if booking_confirmed:
+            selected_doctor_object = session_params.get('selected_doctor_object')
             
-            # Return this response immediately, skipping the symptom analysis.
+            if selected_doctor_object and user_name and dob:
+                # Find the user's email in the database
+                user_email = find_user_email(user_name, dob)
+
+                if user_email:
+                    # Convert the Firestore timestamp back to a datetime object
+                    time_slot_seconds = selected_doctor_object.get('time_slot', {}).get('_seconds', 0)
+                    time_slot_nanos = selected_doctor_object.get('time_slot', {}).get('_nanoseconds', 0)
+                    appointment_time = datetime.fromtimestamp(time_slot_seconds + time_slot_nanos / 1e9)
+                    
+                    appointment_booked = book_appointment(selected_doctor_object.get("name"), appointment_time, user_name, user_email)
+                    
+                    if appointment_booked:
+                        # Call the placeholder function to simulate sending a confirmation email
+                        email_sent = send_confirmation_email(user_email, {
+                            "doctor_name": selected_doctor_object.get("name"),
+                            "time_slot": appointment_time,
+                            "clinic_address": selected_doctor_object.get("clinic_address")
+                        })
+                        if email_sent:
+                            response_text = f"Your appointment with {selected_doctor_object.get('name')} has been successfully booked! A confirmation email has been sent to {user_email}."
+                        else:
+                            response_text = f"Your appointment with {selected_doctor_object.get('name')} has been successfully booked! However, there was an issue sending the confirmation email."
+                    else:
+                        response_text = "I'm sorry, there was an issue booking your appointment. Please try again."
+                else:
+                    response_text = "I'm sorry, I could not find your information in the database. Please make sure your name and date of birth are correct."
+            else:
+                response_text = "I'm sorry, I could not find the doctor's or your details to book the appointment."
+            
+            # Clear the booking_confirmed flag and other temporary parameters for the next session.
             response = {
+                "sessionInfo": {
+                    "parameters": {
+                        "booking_confirmed": None,
+                        "selected_doctor_object": None,
+                        "user_name": None,
+                        "dob": None
+                    }
+                },
                 "fulfillmentResponse": {
                     "messages": [
                         {
@@ -199,6 +380,72 @@ def webhook():
                     ]
                 }
             }
+            return jsonify(response)
+        
+        # --- ORIGINAL LOGIC FOR INSURANCE CHECK ---
+        # This branch is triggered after the user selects a doctor and provides insurance info.
+        if selected_doctor_name_choice and insurance_provider:
+            # Map the user's choice (e.g., "second doctor") to the actual doctor's name
+            try:
+                # Find the index of the number word (e.g., "first" -> 0, "second" -> 1)
+                number_words = ["first", "second", "third", "fourth", "fifth"]
+                choice_index = number_words.index(selected_doctor_name_choice.lower().split()[0])
+                if choice_index < len(doctor_info_list):
+                    selected_doctor_object = doctor_info_list[choice_index]
+                    selected_doctor_name = selected_doctor_object.get("name")
+            except (ValueError, IndexError):
+                selected_doctor_name = selected_doctor_name_choice
+            
+            if not selected_doctor_object:
+                status, cost, copay = check_insurance_and_cost(selected_doctor_name, insurance_provider)
+            else:
+                status, cost, copay = check_insurance_and_cost(selected_doctor_object.get("name"), insurance_provider)
+            
+            # Now, handle the final booking
+            if "covered" in status:
+                response_text = f"For your visit with {selected_doctor_name}, the status is: Your visit is covered by your insurance. Your estimated copay is: {copay}. Do you want to book this appointment?"
+                
+                # We save the selected doctor object to the session so we can access it later for booking
+                response = {
+                    "sessionInfo": {
+                        "parameters": {
+                            "selected_doctor_object": selected_doctor_object,
+                            "final_status": "covered"
+                        }
+                    }
+                    ,
+                    "fulfillmentResponse": {
+                        "messages": [
+                            {
+                                "text": {
+                                    "text": [response_text]
+                                }
+                            }
+                        ]
+                    }
+                }
+            else: # Insurance not covered
+                response_text = f"For your visit with {selected_doctor_name}, the status is: {status}"
+                if cost:
+                    response_text += f"\n\nEstimated total cost: {cost}"
+                response_text += f"\n\nWould you like to continue with this booking, or would you prefer to find another doctor who accepts {insurance_provider}?"
+                
+                response = {
+                    "sessionInfo": {
+                        "parameters": {
+                            "final_status": "not_covered"
+                        }
+                    },
+                    "fulfillmentResponse": {
+                        "messages": [
+                            {
+                                "text": {
+                                    "text": [response_text]
+                                }
+                            }
+                        ]
+                    }
+                }
             return jsonify(response)
         
         # --- ORIGINAL SYMPTOM ANALYSIS LOGIC ---
