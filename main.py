@@ -70,11 +70,11 @@ def get_available_doctors(specialty):
             
             # 1. First, try to find an available appointment on the upcoming weekend.
             weekend_query = availability_ref.where('doctor_id', '==', doctor_id)\
-                                            .where('is_booked', '==', False)\
-                                            .where('time_slot', '>', start_of_weekend)\
-                                            .where('time_slot', '<', end_of_weekend)\
-                                            .order_by('time_slot')\
-                                            .limit(1)
+                                           .where('is_booked', '==', False)\
+                                           .where('time_slot', '>', start_of_weekend)\
+                                           .where('time_slot', '<', end_of_weekend)\
+                                           .order_by('time_slot')\
+                                           .limit(1)
             
             weekend_docs = weekend_query.stream()
             appointment_doc = next(weekend_docs, None)
@@ -82,11 +82,11 @@ def get_available_doctors(specialty):
             # 2. If a weekend appointment is not found, fall back to any available appointment within 30 days.
             if not appointment_doc:
                 any_day_query = availability_ref.where('doctor_id', '==', doctor_id)\
-                                                .where('is_booked', '==', False)\
-                                                .where('time_slot', '>', now)\
-                                                .where('time_slot', '<', thirty_days_from_now)\
-                                                .order_by('time_slot')\
-                                                .limit(1)
+                                               .where('is_booked', '==', False)\
+                                               .where('time_slot', '>', now)\
+                                               .where('time_slot', '<', thirty_days_from_now)\
+                                               .order_by('time_slot')\
+                                               .limit(1)
                 any_day_docs = any_day_query.stream()
                 appointment_doc = next(any_day_docs, None)
                 
@@ -133,13 +133,14 @@ def check_insurance_and_cost(doctor_name, insurance_provider):
         print(f"Error checking insurance: {e}")
         return "An error occurred while checking insurance.", None, None
     
-def find_user_email(name, dob):
+def find_user_email(first_name, last_name, dob):
     """
     Looks up a user's email address in the 'patients' Firestore collection
-    based on their name and date of birth.
+    based on their first name, last name, and date of birth.
     
     Args:
-        name (str): The user's name.
+        first_name (str): The user's first name.
+        last_name (str): The user's last name.
         dob (str): The user's date of birth.
         
     Returns:
@@ -147,7 +148,10 @@ def find_user_email(name, dob):
     """
     try:
         patients_ref = db.collection('patients')
-        user_query = patients_ref.where('name', '==', name).where('dob', '==', dob).limit(1)
+        # Updated query to match the 'firstName' and 'lastName' fields in the database.
+        user_query = patients_ref.where('firstName', '==', first_name)\
+                                 .where('lastName', '==', last_name)\
+                                 .where('dob', '==', dob).limit(1)
         user_docs = user_query.stream()
         user_doc = next(user_docs, None)
         
@@ -250,8 +254,8 @@ def book_appointment(doctor_name, time_slot, user_name, user_email):
         # Step 2: Find the specific time slot document using both doctor_id and time_slot
         availability_ref = db.collection('doctor_availability')
         appointment_query = availability_ref.where('doctor_id', '==', doctor_id)\
-                                            .where('time_slot', '==', time_slot)\
-                                            .limit(1)
+                                           .where('time_slot', '==', time_slot)\
+                                           .limit(1)
         
         appointment_docs = list(appointment_query.stream())
         if not appointment_docs:
@@ -331,8 +335,13 @@ def webhook():
             selected_doctor_object = session_params.get('selected_doctor_object')
             
             if selected_doctor_object and user_name and dob:
-                # Find the user's email in the database
-                user_email = find_user_email(user_name, dob)
+                # Split the user_name into first and last name to query the database.
+                name_parts = user_name.split(' ', 1)
+                first_name = name_parts[0]
+                last_name = name_parts[1] if len(name_parts) > 1 else ""
+                
+                # Find the user's email in the database using the updated function.
+                user_email = find_user_email(first_name, last_name, dob)
 
                 if user_email:
                     # Convert the Firestore timestamp back to a datetime object
