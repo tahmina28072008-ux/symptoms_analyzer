@@ -314,15 +314,23 @@ def get_doctor_from_choice(doctor_info_list, choice_string):
     Returns:
         dict: The matching doctor object, or None if not found.
     """
-    # Try to match a number word (e.g., "first", "second")
+    choice_lower = choice_string.lower()
+
+    # --- FIX START ---
+    # The previous logic was too rigid, only looking at the first word.
+    # Now, we check the entire string for keywords.
+
+    # Map number words to their indices.
     number_words = ["first", "second", "third", "fourth", "fifth"]
-    choice_lower = choice_string.lower().split()[0]
-    if choice_lower in number_words:
-        try:
-            choice_index = number_words.index(choice_lower)
-            return doctor_info_list[choice_index]
-        except IndexError:
-            return None
+    for i, word in enumerate(number_words):
+        if word in choice_lower:
+            try:
+                # Return the doctor at the corresponding index.
+                return doctor_info_list[i]
+            except IndexError:
+                # Handle cases where the number is out of the list's bounds.
+                return None
+    # --- FIX END ---
     
     # Try to extract a name using a simple regex and match it to the list
     match = re.search(r'dr\.?\s+([a-zA-Z\s]+)', choice_string, re.IGNORECASE)
