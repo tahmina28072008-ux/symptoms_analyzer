@@ -452,10 +452,11 @@ def webhook():
                 selected_doctor_name = selected_doctor_object.get("name")
                 status, cost, copay = check_insurance_and_cost(selected_doctor_name, insurance_provider)
                 
-                # We save the selected doctor object to the session so we can access it later for booking
+                # We save the selected doctor object and the full list to the session.
                 response_params = {
                     "selected_doctor_object": selected_doctor_object,
-                    "final_status": "covered" if "covered" in status else "not_covered"
+                    "final_status": "covered" if "covered" in status else "not_covered",
+                    "doctor_info_list": doctor_info_list # Corrected: Pass the list back to the session
                 }
                 
                 if "covered" in status:
