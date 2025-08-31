@@ -37,32 +37,28 @@ app = Flask(__name__)
 
 def _get_date_string_from_dob_param(dob_param):
     """
-    Helper function to robustly parse the date from a Dialogflow parameter.
-    It handles simple strings, structured dictionary formats, and Firestore Timestamps.
+    Helper function to robustly parse the date from a Dialogflow parameter
+    and format it as 'mm-dd-yyyy' for the Firestore query.
     """
-    if isinstance(dob_param, str):
-        # Handle simple MM/DD/YYYY strings
-        try:
-            dob_obj = datetime.strptime(dob_param, "%m/%d/%Y")
-            return dob_obj.strftime("%Y-%m-%d")
-        except ValueError:
-            # Handle standard ISO 8601 format from Dialogflow entities
-            try:
-                dob_obj = datetime.strptime(dob_param, "%Y-%m-%dT%H:%M:%SZ")
-                return dob_obj.strftime("%Y-%m-%d")
-            except ValueError:
-                return None
-    elif isinstance(dob_param, dict) and 'year' in dob_param and 'month' in dob_param and 'day' in dob_param:
-        try:
-            # Reconstruct the date from the dictionary and format it as YYYY-MM-DD
+    try:
+        if isinstance(dob_param, str):
+            # Try to handle standard ISO 8601 format from Dialogflow
+            dob_obj = datetime.strptime(dob_param.split('T')[0], "%Y-%m-%d")
+        elif isinstance(dob_param, dict) and 'year' in dob_param and 'month' in dob_param and 'day' in dob_param:
+            # Reconstruct the date from the dictionary
             year = int(dob_param['year'])
             month = int(dob_param['month'])
             day = int(dob_param['day'])
-            return f"{year:04d}-{month:02d}-{day:02d}"
-        except (ValueError, TypeError):
-            return None
-    
-    return None
+            dob_obj = datetime(year, month, day)
+        else:
+            return None # Invalid format
+        
+        # Format the datetime object to 'mm-dd-yyyy'
+        return dob_obj.strftime("%m-%d-%Y")
+        
+    except (ValueError, TypeError) as e:
+        print(f"Error parsing date parameter: {e}")
+        return None
 
 def get_available_doctors(specialty):
     """
@@ -99,10 +95,10 @@ def get_available_doctors(specialty):
             end_of_weekend = start_of_weekend + timedelta(days=2) # Covers Saturday and Sunday
             
             weekend_query = availability_ref.where(filter=firestore.FieldFilter('doctor_id', '==', doctor_id)) \
-                                            .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
-                                            .where(filter=firestore.FieldFilter('time_slot', '>=', start_of_weekend)) \
-                                            .where(filter=firestore.FieldFilter('time_slot', '<', end_of_weekend)) \
-                                            .order_by('time_slot').limit(1)
+                                             .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
+                                             .where(filter=firestore.FieldFilter('time_slot', '>=', start_of_weekend)) \
+                                             .where(filter=firestore.FieldFilter('time_slot', '<', end_of_weekend)) \
+                                             .order_by('time_slot').limit(1)
             
             appointment_doc = next(weekend_query.stream(), None)
 
@@ -114,7 +110,7 @@ def get_available_doctors(specialty):
                                                 .where(filter=firestore.FieldFilter('time_slot', '<', thirty_days_from_now)) \
                                                 .order_by('time_slot').limit(1)
                 appointment_doc = next(any_day_query.stream(), None)
-            
+                
             if appointment_doc:
                 appointment_data = appointment_doc.to_dict()
                 appointment_data['id'] = appointment_doc.id # Save the document ID for booking
@@ -141,7 +137,7 @@ def check_insurance_and_cost(doctor_name, insurance_provider):
 
     Returns:
         tuple: A tuple containing the coverage status message (str), the estimated
-               visit cost (str), and the estimated copay (str).
+                visit cost (str), and the estimated copay (str).
     """
     try:
         doctors_ref = db.collection('doctors')
@@ -176,7 +172,7 @@ def find_user_email(first_name, last_name, dob):
     Args:
         first_name (str): The user's first name.
         last_name (str): The user's last name.
-        dob (str): The user's date of birth in 'YYYY-MM-DD' format.
+        dob (str): The user's date of birth in 'mm-dd-yyyy' format.
 
     Returns:
         str: The user's email address if found, otherwise None.
@@ -316,10 +312,6 @@ def get_doctor_from_choice(doctor_info_list, choice_string):
     """
     choice_lower = choice_string.lower()
 
-    # --- FIX START ---
-    # The previous logic was too rigid, only looking at the first word.
-    # Now, we check the entire string for keywords.
-
     # Map number words to their indices.
     number_words = ["first", "second", "third", "fourth", "fifth"]
     for i, word in enumerate(number_words):
@@ -330,14 +322,13 @@ def get_doctor_from_choice(doctor_info_list, choice_string):
             except IndexError:
                 # Handle cases where the number is out of the list's bounds.
                 return None
-    # --- FIX END ---
     
     # Try to extract a name using a simple regex and match it to the list
     match = re.search(r'dr\.?\s+([a-zA-Z\s]+)', choice_string, re.IGNORECASE)
     if match:
         name = match.group(1).strip()
         # Find the doctor object where the name matches
-        return next((d for d in doctor_info_list if name in d.get('name', '')), None)
+        return next((d for d in doctor_info_list if name.lower() in d.get('name', '').lower()), None)
     
     return None
 
@@ -386,10 +377,10 @@ def webhook():
                 first_name = name_parts[0]
                 last_name = name_parts[1] if len(name_parts) > 1 else ""
                 
-                # Use the new helper function to get a clean date string.
-                formatted_dob = _get_date_string_from_dob_param(dob)
+                # Use the new helper function to get a clean date string in the correct format.
+                dob_for_firestore = _get_date_string_from_dob_param(dob)
 
-                if not formatted_dob:
+                if not dob_for_firestore:
                     response_text = "I'm sorry, the date of birth format is incorrect. Please use MM/DD/YYYY."
                     return jsonify({
                         "fulfillmentResponse": {
@@ -397,7 +388,7 @@ def webhook():
                         }
                     })
 
-                user_email = find_user_email(first_name, last_name, formatted_dob)
+                user_email = find_user_email(first_name, last_name, dob_for_firestore)
 
                 if user_email:
                     # The `id` is a string, which is what we need.
@@ -525,8 +516,8 @@ def webhook():
                         formatted_time = appointment_time.strftime("%I:%M %p")
                         
                     doctor_list_text += f"{i+1}. Dr. {doctor.get('name')}\n"
-                    doctor_list_text += f"   - Date & Time: {formatted_date} at {formatted_time}\n"
-                    doctor_list_text += f"   - Clinic: {doctor.get('clinic_address')}\n"
+                    doctor_list_text += f"    - Date & Time: {formatted_date} at {formatted_time}\n"
+                    doctor_list_text += f"    - Clinic: {doctor.get('clinic_address')}\n"
                 
                 response_text += doctor_list_text + "\nWould you like to check if your insurance covers your visit with any of these doctors?"
             else:
