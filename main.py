@@ -7,21 +7,25 @@ import firebase_admin
 from firebase_admin import credentials, firestore, exceptions
 from flask import Flask, request, jsonify
 
-# --- Firebase Initialization ---
-# This block initializes the Firestore client. It is designed to work both
-# locally (by using a service account key file) and on Google Cloud services
-# like Cloud Run (by automatically using default application credentials).
+# This try-except block handles credential initialization.
+# For local development, it will look for a service account key file.
+# When deployed to a Google Cloud service like Cloud Run, it will
+# automatically use the default service account credentials
+# provided by the environment, making the key file unnecessary.
 try:
-    # Attempt to use a service account key file, which is necessary for local development.
-    # IMPORTANT: Replace 'path/to/your/serviceAccountKey.json' with your actual key's path.
-    # In a production environment like Cloud Run, this file should not be used
-    # and the environment will handle authentication automatically.
+    # Use credentials from a service account file for local development.
+    # Replace 'path/to/your/serviceAccountKey.json' with your actual key's path.
     cred = credentials.Certificate('path/to/your/serviceAccountKey.json')
     firebase_admin.initialize_app(cred)
-except (FileNotFoundError, ValueError):
-    # If the key file isn't found or is invalid (e.g., in a cloud environment),
-    # fall back to using default credentials provided by the environment.
+except ValueError:
+    # This branch handles the case when the app is running in a GCP environment
+    # where credentials are automatically provided.
     firebase_admin.initialize_app()
+except FileNotFoundError:
+    # This handles the case where the key file is not found, which is expected
+    # when you're deploying to Cloud Run. It will fall back to using default credentials.
+    firebase_admin.initialize_app()
+
 
 # Initialize the Firestore database client.
 db = firestore.client()
@@ -30,20 +34,45 @@ app = Flask(__name__)
 
 # --- Helper Functions for Database Interaction and Email ---
 
+def _get_date_string_from_dob_param(dob_param):
+    """
+    Helper function to robustly parse the date from a Dialogflow parameter.
+    It handles simple strings, structured dictionary formats, and Firestore Timestamps.
+    """
+    if isinstance(dob_param, str):
+        # Handle simple MM/DD/YYYY strings
+        try:
+            dob_obj = datetime.strptime(dob_param, "%m/%d/%Y")
+            return dob_obj.strftime("%Y-%m-%d")
+        except ValueError:
+            # Handle standard ISO 8601 format from Dialogflow entities
+            try:
+                dob_obj = datetime.strptime(dob_param, "%Y-%m-%dT%H:%M:%SZ")
+                return dob_obj.strftime("%Y-%m-%d")
+            except ValueError:
+                return None
+    elif isinstance(dob_param, dict) and 'year' in dob_param and 'month' in dob_param and 'day' in dob_param:
+        try:
+            # Reconstruct the date from the dictionary and format it as YYYY-MM-DD
+            year = int(dob_param['year'])
+            month = int(dob_param['month'])
+            day = int(dob_param['day'])
+            return f"{year:04d}-{month:02d}-{day:02d}"
+        except (ValueError, TypeError):
+            return None
+    
+    return None
+
 def get_available_doctors(specialty):
     """
-    Queries Firestore for available doctors of a specific specialty and their
-    next available time slot. The search prioritizes appointments on the
-    upcoming weekend (Saturday and Sunday), then falls back to any available
-    slot within the next 30 days.
-
+    Queries Firestore for all available doctors of a specific specialty and their available time slots.
+    The query prioritizes weekend appointments, then falls back to any day.
+    
     Args:
         specialty (str): The medical specialty to search for (e.g., 'gp', 'specialist').
-
+        
     Returns:
-        list: A list of dictionaries, where each dictionary contains a doctor's name,
-              clinic address, and an available slot. Returns an empty list if no
-              doctors are found.
+        list: A list of dictionaries, where each dictionary contains a doctor's name, clinic address, and an available slot. Returns an empty list if no doctors are found.
     """
     try:
         available_doctors = []
@@ -272,35 +301,6 @@ def book_appointment(appointment_doc_id, user_name, user_email):
         print(f"Error booking appointment: {e}")
         return False
 
-def _get_date_string_from_dob_param(dob_param):
-    """
-    Helper function to robustly parse the date from a Dialogflow parameter.
-    It handles simple strings, structured dictionary formats, and Firestore Timestamps.
-    """
-    if isinstance(dob_param, str):
-        # Handle simple MM/DD/YYYY strings
-        try:
-            dob_obj = datetime.strptime(dob_param, "%m/%d/%Y")
-            return dob_obj.strftime("%Y-%m-%d")
-        except ValueError:
-            # Handle standard ISO 8601 format from Dialogflow entities
-            try:
-                dob_obj = datetime.strptime(dob_param, "%Y-%m-%dT%H:%M:%SZ")
-                return dob_obj.strftime("%Y-%m-%d")
-            except ValueError:
-                return None
-    elif isinstance(dob_param, dict) and 'year' in dob_param and 'month' in dob_param and 'day' in dob_param:
-        try:
-            # Reconstruct the date from the dictionary and format it as YYYY-MM-DD
-            year = int(dob_param['year'])
-            month = int(dob_param['month'])
-            day = int(dob_param['day'])
-            return f"{year:04d}-{month:02d}-{day:02d}"
-        except (ValueError, TypeError):
-            return None
-    
-    return None
-
 # --- Main Webhook Endpoint ---
 
 @app.route('/', methods=['POST'])
@@ -369,7 +369,7 @@ def webhook():
                         if appointment_booked:
                             # The `time_slot` here is a string, so we need to parse it.
                             time_slot_str = selected_doctor_object.get('time_slot')
-                            appointment_time = datetime.strptime(time_slot_str, '%a, %d %b %Y %H:%M:%S %Z')
+                            appointment_time = datetime.strptime(time_slot_str, '%a, %d %b %Y %H:%M:%S GMT')
                             
                             email_sent = send_confirmation_email(user_email, {
                                 "doctor_name": selected_doctor_object.get("name"),
@@ -408,15 +408,15 @@ def webhook():
 
         # --- Logic for Insurance Check ---
         # This branch is triggered when the user selects a doctor and provides an insurance provider.
-        if selected_doctor_choice and insurance_provider:
+        if selected_doctor_choice and insurance_provider and doctor_info_list:
             print("Entering insurance check logic block...")
             # This is a critical debugging check!
             print(f"Doctor Choice: {selected_doctor_choice}, Insurance: {insurance_provider}")
             
-            # Match the user's "first", "second", etc. choice to the actual doctor object.
+            # Map the user's "first", "second", etc. choice to the actual doctor object.
             try:
                 number_words = ["first", "second", "third", "fourth", "fifth"]
-                choice_index = number_words.index(selected_doctor_choice.lower())
+                choice_index = number_words.index(selected_doctor_choice.lower().split()[0])
                 
                 selected_doctor_object = doctor_info_list[choice_index]
                 selected_doctor_name = selected_doctor_object.get("name")
@@ -476,6 +476,7 @@ def webhook():
                 for i, doctor in enumerate(available_doctors):
                     # Format the time slot for display
                     appointment_time = doctor.get('time_slot')
+                    
                     if isinstance(appointment_time, datetime):
                         formatted_date = appointment_time.strftime("%A, %B %d, %Y")
                         formatted_time = appointment_time.strftime("%I:%M %p")
@@ -516,6 +517,4 @@ def webhook():
         }), 500
 
 if __name__ == '__main__':
-    # The `debug=True` flag should only be used for local development.
-    # In a production environment, this should be set to `False`.
     app.run(debug=True, port=int(os.environ.get('PORT', 8000)))
