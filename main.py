@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import firebase_admin
 from firebase_admin import credentials, firestore, exceptions
 from flask import Flask, request, jsonify
+import re # Import the regular expression module
 
 # This try-except block handles credential initialization.
 # For local development, it will look for a service account key file.
@@ -301,6 +302,37 @@ def book_appointment(appointment_doc_id, user_name, user_email):
         print(f"Error booking appointment: {e}")
         return False
 
+def get_doctor_from_choice(doctor_info_list, choice_string):
+    """
+    A robust helper function to find the doctor object based on the user's choice.
+    It can handle both numerical choices (e.g., "first one") and direct names (e.g., "Dr. Jane Doe").
+    
+    Args:
+        doctor_info_list (list): The list of doctor objects stored in the session.
+        choice_string (str): The user's input string.
+        
+    Returns:
+        dict: The matching doctor object, or None if not found.
+    """
+    # Try to match a number word (e.g., "first", "second")
+    number_words = ["first", "second", "third", "fourth", "fifth"]
+    choice_lower = choice_string.lower().split()[0]
+    if choice_lower in number_words:
+        try:
+            choice_index = number_words.index(choice_lower)
+            return doctor_info_list[choice_index]
+        except IndexError:
+            return None
+    
+    # Try to extract a name using a simple regex and match it to the list
+    match = re.search(r'dr\.?\s+([a-zA-Z\s]+)', choice_string, re.IGNORECASE)
+    if match:
+        name = match.group(1).strip()
+        # Find the doctor object where the name matches
+        return next((d for d in doctor_info_list if name in d.get('name', '')), None)
+    
+    return None
+
 # --- Main Webhook Endpoint ---
 
 @app.route('/', methods=['POST'])
@@ -413,19 +445,11 @@ def webhook():
             # This is a critical debugging check!
             print(f"Doctor Choice: {selected_doctor_choice}, Insurance: {insurance_provider}")
             
-            # Map the user's "first", "second", etc. choice to the actual doctor object.
-            try:
-                number_words = ["first", "second", "third", "fourth", "fifth"]
-                choice_index = number_words.index(selected_doctor_choice.lower().split()[0])
-                
-                selected_doctor_object = doctor_info_list[choice_index]
-                selected_doctor_name = selected_doctor_object.get("name")
-            except (ValueError, IndexError):
-                # Fallback in case the user's choice is not a number word.
-                selected_doctor_name = selected_doctor_choice
-                selected_doctor_object = next((d for d in doctor_info_list if d.get('name') == selected_doctor_choice), None)
+            # Use the new, more robust helper function to find the doctor object
+            selected_doctor_object = get_doctor_from_choice(doctor_info_list, selected_doctor_choice)
 
             if selected_doctor_object:
+                selected_doctor_name = selected_doctor_object.get("name")
                 status, cost, copay = check_insurance_and_cost(selected_doctor_name, insurance_provider)
                 
                 # We save the selected doctor object to the session so we can access it later for booking
@@ -441,6 +465,13 @@ def webhook():
                 
                 response = {
                     "sessionInfo": {"parameters": response_params},
+                    "fulfillmentResponse": {"messages": [{"text": {"text": [response_text]}}]}
+                }
+                return jsonify(response)
+            else:
+                # If we couldn't find the doctor, send an error message back to the user
+                response_text = "I'm sorry, I couldn't find that doctor in my records. Can you please select one by number (e.g., 'first one') or type the full name exactly as it appears?"
+                response = {
                     "fulfillmentResponse": {"messages": [{"text": {"text": [response_text]}}]}
                 }
                 return jsonify(response)
