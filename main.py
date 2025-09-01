@@ -99,20 +99,20 @@ def get_available_doctors(specialty):
             end_of_weekend = start_of_weekend + timedelta(days=2) # Covers Saturday and Sunday
             
             weekend_query = availability_ref.where(filter=firestore.FieldFilter('doctor_id', '==', doctor_id)) \
-                                     .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
-                                     .where(filter=firestore.FieldFilter('time_slot', '>=', start_of_weekend)) \
-                                     .where(filter=firestore.FieldFilter('time_slot', '<', end_of_weekend)) \
-                                     .order_by('time_slot').limit(1)
+                                        .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
+                                        .where(filter=firestore.FieldFilter('time_slot', '>=', start_of_weekend)) \
+                                        .where(filter=firestore.FieldFilter('time_slot', '<', end_of_weekend)) \
+                                        .order_by('time_slot').limit(1)
             
             appointment_doc = next(weekend_query.stream(), None)
 
             # If no weekend slot is found, search for any available slot within the next 30 days.
             if not appointment_doc:
                 any_day_query = availability_ref.where(filter=firestore.FieldFilter('doctor_id', '==', doctor_id)) \
-                                         .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
-                                         .where(filter=firestore.FieldFilter('time_slot', '>', now)) \
-                                         .where(filter=firestore.FieldFilter('time_slot', '<', thirty_days_from_now)) \
-                                         .order_by('time_slot').limit(1)
+                                             .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
+                                             .where(filter=firestore.FieldFilter('time_slot', '>', now)) \
+                                             .where(filter=firestore.FieldFilter('time_slot', '<', thirty_days_from_now)) \
+                                             .order_by('time_slot').limit(1)
                 appointment_doc = next(any_day_query.stream(), None)
             
             if appointment_doc:
@@ -259,7 +259,7 @@ def send_confirmation_email(recipient_email, appointment_details):
         print(f"Error sending confirmation email: {e}")
         return False
 
-def book_appointment(appointment_doc_id, user_name, user_email):
+def book_appointment(appointment_doc_id, user_name, user_email, selected_doctor_object, symptoms):
     """
     Updates the Firestore database to mark a specific appointment as booked
     and creates a new appointment record for the user.
@@ -268,6 +268,8 @@ def book_appointment(appointment_doc_id, user_name, user_email):
         appointment_doc_id (str): The document ID of the specific time slot to book.
         user_name (str): The name of the user booking the appointment.
         user_email (str): The email of the user booking the appointment.
+        selected_doctor_object (dict): The full doctor and appointment object.
+        symptoms (list): The list of symptoms provided by the user.
 
     Returns:
         bool: True if the booking was successful, False otherwise.
@@ -283,21 +285,46 @@ def book_appointment(appointment_doc_id, user_name, user_email):
             print("Appointment is either non-existent or already booked.")
             return False
 
-        # Update the document to mark it as booked.
-        appointment_doc_ref.update({'is_booked': True})
+        # Use a Firestore transaction to ensure atomic operations.
+        @firestore.transactional
+        def update_in_transaction(transaction, appointment_ref):
+            # Read the document inside the transaction.
+            snapshot = appointment_ref.get(transaction=transaction)
+            if not snapshot.exists or snapshot.get('is_booked'):
+                raise ValueError("Appointment already booked by another user or does not exist.")
+            
+            # Update the availability document to prevent double-booking.
+            transaction.update(appointment_ref, {'is_booked': True})
+
+        # Run the transaction.
+        transaction = db.transaction()
+        update_in_transaction(transaction, appointment_doc_ref)
         print("Appointment document updated successfully.")
 
         # Create a new document in the 'appointments' collection.
         appointments_ref = db.collection('appointments')
-        appointments_ref.add({
-            'user_name': user_name,
-            'user_email': user_email,
-            'time_slot_ref': appointment_doc_ref,
+        
+        # Create a new document with all the booking details.
+        new_appointment_data = {
+            'patient_name': user_name,
+            'patient_email': user_email,
+            'doctor_name': selected_doctor_object.get('name'),
+            'clinic_address': selected_doctor_object.get('clinic_address'),
+            'time_slot': selected_doctor_object.get('time_slot'),
+            'symptoms': symptoms,
             'booking_date': datetime.now()
-        })
+        }
+        
+        appointments_ref.add(new_appointment_data)
         print(f"Appointment record created for user {user_name}.")
         return True
     
+    except exceptions.FirebaseError as e:
+        print(f"Firestore transaction failed: {e}")
+        return False
+    except ValueError as e:
+        print(f"Error during transaction: {e}")
+        return False
     except Exception as e:
         print(f"Error booking appointment: {e}")
         return False
@@ -316,10 +343,6 @@ def get_doctor_from_choice(doctor_info_list, choice_string):
     """
     choice_lower = choice_string.lower()
 
-    # --- FIX START ---
-    # The previous logic was too rigid, only looking at the first word.
-    # Now, we check the entire string for keywords.
-
     # Map number words to their indices.
     number_words = ["first", "second", "third", "fourth", "fifth"]
     for i, word in enumerate(number_words):
@@ -330,14 +353,13 @@ def get_doctor_from_choice(doctor_info_list, choice_string):
             except IndexError:
                 # Handle cases where the number is out of the list's bounds.
                 return None
-    # --- FIX END ---
     
     # Try to extract a name using a simple regex and match it to the list
     match = re.search(r'dr\.?\s+([a-zA-Z\s]+)', choice_string, re.IGNORECASE)
     if match:
         name = match.group(1).strip()
         # Find the doctor object where the name matches
-        return next((d for d in doctor_info_list if name in d.get('name', '')), None)
+        return next((d for d in doctor_info_list if name.lower() in d.get('name', '').lower()), None)
     
     return None
 
@@ -372,7 +394,7 @@ def webhook():
         user_name = session_params.get('user_name', None)
         dob = session_params.get('dob', None)
         booking_confirmed = session_params.get('booking_confirmed', False)
-
+        
         # --- Logic for Appointment Confirmation ---
         if booking_confirmed:
             print("Entering appointment confirmation logic block...")
@@ -402,21 +424,24 @@ def webhook():
 
                 if user_email:
                     # The `id` is a string, which is what we need.
-                    appointment_doc_id = selected_doctor_object.get('id') 
+                    appointment_doc_id = selected_doctor_object.get('id')
                     
                     if appointment_doc_id:
-                        appointment_booked = book_appointment(appointment_doc_id, user_name, user_email)
+                        appointment_booked = book_appointment(
+                            appointment_doc_id, 
+                            user_name, 
+                            user_email, 
+                            selected_doctor_object, 
+                            symptoms_list # Pass the symptoms
+                        )
                     
                         if appointment_booked:
-                            # The `time_slot` here is a string, so we need to parse it.
-                            # The user's provided log shows appointment_time as a separate parameter.
-                            # We will use that here, but if that is not available, we can fall back to the selected doctor object.
-                            time_slot_str = session_params.get('appointment_time') or selected_doctor_object.get('time_slot')
-                            appointment_time = datetime.strptime(time_slot_str, '%a, %d %b %Y %H:%M:%S GMT')
+                            # The `time_slot` here is a Firestore Timestamp, so we can use it directly.
+                            time_slot = selected_doctor_object.get('time_slot')
                             
                             email_sent = send_confirmation_email(user_email, {
                                 "doctor_name": selected_doctor_object.get("name"),
-                                "time_slot": appointment_time,
+                                "time_slot": time_slot,
                                 "clinic_address": selected_doctor_object.get("clinic_address")
                             })
                             
@@ -441,9 +466,10 @@ def webhook():
                         "selected_doctor_object": None,
                         "user_name": None,
                         "dob": None,
+                        "symptoms_list": None, # Clear this too
                         # Crucial fix: Send back the parameters for Dialogflow's final fulfillment message
                         "doctor_name": selected_doctor_object.get('name') if selected_doctor_object else None,
-                        "appointment_time": session_params.get('appointment_time') or selected_doctor_object.get('time_slot') if selected_doctor_object else None
+                        "appointment_time": selected_doctor_object.get('time_slot').strftime('%a, %d %b %Y %H:%M:%S GMT') if selected_doctor_object and selected_doctor_object.get('time_slot') else None
                     }
                 },
                 "fulfillmentResponse": {
