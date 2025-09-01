@@ -33,6 +33,11 @@ db = firestore.client()
 
 app = Flask(__name__)
 
+# IMPORTANT: Set up the app ID for Firestore access.
+# This variable is provided by the canvas environment to ensure
+# data is stored in the correct, isolated project path.
+app_id = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id'
+
 # --- Helper Functions for Database Interaction and Email ---
 
 def _get_date_string_from_dob_param(dob_param):
@@ -81,7 +86,8 @@ def get_available_doctors(specialty):
         thirty_days_from_now = now + timedelta(days=30)
 
         # Step 1: Find all doctors with the specified specialty.
-        doctors_ref = db.collection('doctors')
+        # This collection is now within the public data path.
+        doctors_ref = db.collection(f'artifacts/{app_id}/public/data/doctors')
         doctor_query = doctors_ref.where(filter=firestore.FieldFilter('specialty', '==', specialty))
         doctor_docs = doctor_query.stream()
 
@@ -90,7 +96,8 @@ def get_available_doctors(specialty):
             doctor_data = doctor_doc.to_dict()
             
             # Step 2: For each doctor, find the next available appointment.
-            availability_ref = db.collection('doctor_availability')
+            # This collection is also now within the public data path.
+            availability_ref = db.collection(f'artifacts/{app_id}/public/data/doctor_availability')
             
             # First, try to find an appointment on the upcoming weekend.
             days_until_saturday = (5 - now.weekday() + 7) % 7
@@ -99,20 +106,20 @@ def get_available_doctors(specialty):
             end_of_weekend = start_of_weekend + timedelta(days=2) # Covers Saturday and Sunday
             
             weekend_query = availability_ref.where(filter=firestore.FieldFilter('doctor_id', '==', doctor_id)) \
-                                        .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
-                                        .where(filter=firestore.FieldFilter('time_slot', '>=', start_of_weekend)) \
-                                        .where(filter=firestore.FieldFilter('time_slot', '<', end_of_weekend)) \
-                                        .order_by('time_slot').limit(1)
+                                     .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
+                                     .where(filter=firestore.FieldFilter('time_slot', '>=', start_of_weekend)) \
+                                     .where(filter=firestore.FieldFilter('time_slot', '<', end_of_weekend)) \
+                                     .order_by('time_slot').limit(1)
             
             appointment_doc = next(weekend_query.stream(), None)
 
             # If no weekend slot is found, search for any available slot within the next 30 days.
             if not appointment_doc:
                 any_day_query = availability_ref.where(filter=firestore.FieldFilter('doctor_id', '==', doctor_id)) \
-                                             .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
-                                             .where(filter=firestore.FieldFilter('time_slot', '>', now)) \
-                                             .where(filter=firestore.FieldFilter('time_slot', '<', thirty_days_from_now)) \
-                                             .order_by('time_slot').limit(1)
+                                                 .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
+                                                 .where(filter=firestore.FieldFilter('time_slot', '>', now)) \
+                                                 .where(filter=firestore.FieldFilter('time_slot', '<', thirty_days_from_now)) \
+                                                 .order_by('time_slot').limit(1)
                 appointment_doc = next(any_day_query.stream(), None)
             
             if appointment_doc:
@@ -144,7 +151,8 @@ def check_insurance_and_cost(doctor_name, insurance_provider):
                 visit cost (str), and the estimated copay (str).
     """
     try:
-        doctors_ref = db.collection('doctors')
+        # This collection is now within the public data path.
+        doctors_ref = db.collection(f'artifacts/{app_id}/public/data/doctors')
         doctor_query = doctors_ref.where(filter=firestore.FieldFilter('name', '==', doctor_name)).limit(1)
         doctor_docs = list(doctor_query.stream())
 
@@ -182,7 +190,8 @@ def find_user_email(first_name, last_name, dob):
         str: The user's email address if found, otherwise None.
     """
     try:
-        patients_ref = db.collection('patients')
+        # This collection is now within the public data path as specified by the user.
+        patients_ref = db.collection(f'artifacts/{app_id}/public/data/patients')
         user_query = patients_ref.where(filter=firestore.FieldFilter('firstName', '==', first_name))\
                                  .where(filter=firestore.FieldFilter('lastName', '==', last_name))\
                                  .where(filter=firestore.FieldFilter('dob', '==', dob)).limit(1)
@@ -276,8 +285,8 @@ def book_appointment(appointment_doc_id, user_name, user_email, selected_doctor_
     """
     print(f"Attempting to book appointment with ID: {appointment_doc_id}")
     try:
-        # Get the reference to the specific appointment document.
-        appointment_doc_ref = db.collection('doctor_availability').document(appointment_doc_id)
+        # This collection is now within the public data path.
+        appointment_doc_ref = db.collection(f'artifacts/{app_id}/public/data/doctor_availability').document(appointment_doc_id)
         
         # Check if the document exists and is not already booked.
         doc_snapshot = appointment_doc_ref.get()
@@ -301,8 +310,9 @@ def book_appointment(appointment_doc_id, user_name, user_email, selected_doctor_
         update_in_transaction(transaction, appointment_doc_ref)
         print("Appointment document updated successfully.")
 
-        # Create a new document in the 'appointments' collection.
-        appointments_ref = db.collection('appointments')
+        # Create a new document in the 'appointments' collection,
+        # which is now within the public data path.
+        appointments_ref = db.collection(f'artifacts/{app_id}/public/data/appointments')
         
         # Create a new document with all the booking details.
         new_appointment_data = {
