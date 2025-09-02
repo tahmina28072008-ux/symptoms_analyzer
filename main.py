@@ -110,10 +110,10 @@ def get_available_doctors(specialty):
             # If no weekend slot is found, search for any available slot within the next 30 days.
             if not appointment_doc:
                 any_day_query = availability_ref.where(filter=firestore.FieldFilter('doctor_id', '==', doctor_id)) \
-                                                   .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
-                                                   .where(filter=firestore.FieldFilter('time_slot', '>', now)) \
-                                                   .where(filter=firestore.FieldFilter('time_slot', '<', thirty_days_from_now)) \
-                                                   .order_by('time_slot').limit(1)
+                                                 .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
+                                                 .where(filter=firestore.FieldFilter('time_slot', '>', now)) \
+                                                 .where(filter=firestore.FieldFilter('time_slot', '<', thirty_days_from_now)) \
+                                                 .order_by('time_slot').limit(1)
                 appointment_doc = next(any_day_query.stream(), None)
             
             if appointment_doc:
@@ -421,7 +421,7 @@ def webhook():
 
                 if user_email and patient_doc_id:
                     # The `id` is a string, which is what we need.
-                    appointment_doc_id = selected_doctor_object.get('id') 
+                    appointment_doc_id = selected_doctor_object.get('id')
                     
                     if appointment_doc_id:
                         # FIX: Pass the patient_doc_id to the booking function.
