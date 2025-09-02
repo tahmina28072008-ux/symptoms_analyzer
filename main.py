@@ -100,20 +100,20 @@ def get_available_doctors(specialty):
             end_of_weekend = start_of_weekend + timedelta(days=2) # Covers Saturday and Sunday
             
             weekend_query = availability_ref.where(filter=firestore.FieldFilter('doctor_id', '==', doctor_id)) \
-                                            .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
-                                            .where(filter=firestore.FieldFilter('time_slot', '>=', start_of_weekend)) \
-                                            .where(filter=firestore.FieldFilter('time_slot', '<', end_of_weekend)) \
-                                            .order_by('time_slot').limit(1)
+                                             .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
+                                             .where(filter=firestore.FieldFilter('time_slot', '>=', start_of_weekend)) \
+                                             .where(filter=firestore.FieldFilter('time_slot', '<', end_of_weekend)) \
+                                             .order_by('time_slot').limit(1)
             
             appointment_doc = next(weekend_query.stream(), None)
 
             # If no weekend slot is found, search for any available slot within the next 30 days.
             if not appointment_doc:
                 any_day_query = availability_ref.where(filter=firestore.FieldFilter('doctor_id', '==', doctor_id)) \
-                                                .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
-                                                .where(filter=firestore.FieldFilter('time_slot', '>', now)) \
-                                                .where(filter=firestore.FieldFilter('time_slot', '<', thirty_days_from_now)) \
-                                                .order_by('time_slot').limit(1)
+                                                   .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
+                                                   .where(filter=firestore.FieldFilter('time_slot', '>', now)) \
+                                                   .where(filter=firestore.FieldFilter('time_slot', '<', thirty_days_from_now)) \
+                                                   .order_by('time_slot').limit(1)
                 appointment_doc = next(any_day_query.stream(), None)
             
             if appointment_doc:
@@ -215,22 +215,23 @@ def send_confirmation_email(recipient_email, appointment_details):
     """
     try:
         # Get SMTP credentials and server details from environment variables.
-        # FIX: Added a more explicit error message here to help you debug why emails aren't sending.
         smtp_host = os.environ.get('SMTP_HOST')
         smtp_port = os.environ.get('SMTP_PORT', 587)
-        smtp_user = os.environ.get('SMTP_USER')
-        smtp_pass = os.environ.get('SMTP_PASS')
+        # FIX: Use SENDER_EMAIL and SENDER_PASSWORD
+        sender_email = os.environ.get('SENDER_EMAIL')
+        sender_password = os.environ.get('SENDER_PASSWORD')
 
-        if not all([smtp_host, smtp_port, smtp_user, smtp_pass]):
+        if not all([smtp_host, smtp_port, sender_email, sender_password]):
             print("SMTP environment variables are not set. Cannot send email.")
-            print("Please ensure SMTP_HOST, SMTP_PORT, SMTP_USER, and SMTP_PASS are configured.")
+            print("Please ensure SMTP_HOST, SMTP_PORT, SENDER_EMAIL, and SENDER_PASSWORD are configured.")
             return False
             
         smtp_port = int(smtp_port)
 
         msg = EmailMessage()
         msg['Subject'] = 'Your Appointment Confirmation'
-        msg['From'] = smtp_user
+        # FIX: Use SENDER_EMAIL for the 'From' address
+        msg['From'] = sender_email
         msg['To'] = recipient_email
         
         doctor_name = appointment_details.get('doctor_name')
@@ -255,7 +256,8 @@ def send_confirmation_email(recipient_email, appointment_details):
 
         with smtplib.SMTP(smtp_host, smtp_port) as server:
             server.starttls()
-            server.login(smtp_user, smtp_pass)
+            # FIX: Use SENDER_EMAIL and SENDER_PASSWORD for login
+            server.login(sender_email, sender_password)
             server.send_message(msg)
             print(f"Confirmation email sent to {recipient_email}")
             return True
