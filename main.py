@@ -35,39 +35,34 @@ app = Flask(__name__)
 
 # --- Helper Functions for Database Interaction and Email ---
 
-def get_patient_details(patient_id):
+def _get_date_string_from_dob_param(dob_param):
     """
-    Looks up a patient's details in the 'patients' Firestore collection
-    using their unique patient_id field.
+    Helper function to robustly parse the date from a Dialogflow parameter.
+    It handles simple strings, structured dictionary formats, and Firestore Timestamps.
+    """
+    if isinstance(dob_param, str):
+        # Handle simple MM/DD/YYYY strings
+        try:
+            dob_obj = datetime.strptime(dob_param, "%m/%d/%Y")
+            return dob_obj.strftime("%Y-%m-%d")
+        except ValueError:
+            # Handle standard ISO 8601 format from Dialogflow entities
+            try:
+                dob_obj = datetime.strptime(dob_param, "%Y-%m-%dT%H:%M:%SZ")
+                return dob_obj.strftime("%Y-%m-%d")
+            except ValueError:
+                return None
+    elif isinstance(dob_param, dict) and 'year' in dob_param and 'month' in dob_param and 'day' in dob_param:
+        try:
+            # Reconstruct the date from the dictionary and format it as YYYY-MM-DD
+            year = int(dob_param['year'])
+            month = int(dob_param['month'])
+            day = int(dob_param['day'])
+            return f"{year:04d}-{month:02d}-{day:02d}"
+        except (ValueError, TypeError):
+            return None
     
-    Args:
-        patient_id (str): The patient's unique ID.
-
-    Returns:
-        dict: The patient's data (e.g., email, name) if found, otherwise None.
-    """
-    try:
-        # Use a query to find the document where the 'patient_id' field matches the value.
-        patients_ref = db.collection('patients')
-        query = patients_ref.where('patient_id', '==', patient_id).limit(1) # We expect only one match
-        
-        docs = query.stream()
-        
-        # The stream() method returns a generator, so we iterate through it.
-        # Since we expect at most one document, we can use a loop or next().
-        for doc in docs:
-            print(f"Successfully found patient with Firestore Document ID: {doc.id}")
-            return doc.to_dict()
-
-        # If the loop finishes without finding a document, it means there was no match.
-        print(f"No patient document found with patient_id: {patient_id}")
-        return None
-    except exceptions.FirebaseError as e:
-        print(f"Firestore query failed for patient ID {patient_id}: {e}")
-        return None
-    except Exception as e:
-        print(f"An unexpected error occurred while finding patient details: {e}")
-        return None
+    return None
 
 def get_available_doctors(specialty):
     """
@@ -104,20 +99,20 @@ def get_available_doctors(specialty):
             end_of_weekend = start_of_weekend + timedelta(days=2) # Covers Saturday and Sunday
             
             weekend_query = availability_ref.where(filter=firestore.FieldFilter('doctor_id', '==', doctor_id)) \
-                                            .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
-                                            .where(filter=firestore.FieldFilter('time_slot', '>=', start_of_weekend)) \
-                                            .where(filter=firestore.FieldFilter('time_slot', '<', end_of_weekend)) \
-                                            .order_by('time_slot').limit(1)
+                                     .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
+                                     .where(filter=firestore.FieldFilter('time_slot', '>=', start_of_weekend)) \
+                                     .where(filter=firestore.FieldFilter('time_slot', '<', end_of_weekend)) \
+                                     .order_by('time_slot').limit(1)
             
             appointment_doc = next(weekend_query.stream(), None)
 
             # If no weekend slot is found, search for any available slot within the next 30 days.
             if not appointment_doc:
                 any_day_query = availability_ref.where(filter=firestore.FieldFilter('doctor_id', '==', doctor_id)) \
-                                            .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
-                                            .where(filter=firestore.FieldFilter('time_slot', '>', now)) \
-                                            .where(filter=firestore.FieldFilter('time_slot', '<', thirty_days_from_now)) \
-                                            .order_by('time_slot').limit(1)
+                                         .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
+                                         .where(filter=firestore.FieldFilter('time_slot', '>', now)) \
+                                         .where(filter=firestore.FieldFilter('time_slot', '<', thirty_days_from_now)) \
+                                         .order_by('time_slot').limit(1)
                 appointment_doc = next(any_day_query.stream(), None)
             
             if appointment_doc:
@@ -173,6 +168,39 @@ def check_insurance_and_cost(doctor_name, insurance_provider):
         print(f"Error checking insurance: {e}")
         return "An error occurred while checking insurance.", None, None
     
+def find_user_email(first_name, last_name, dob):
+    """
+    Looks up a user's email address in the 'patients' Firestore collection
+    based on their first name, last name, and date of birth.
+
+    Args:
+        first_name (str): The user's first name.
+        last_name (str): The user's last name.
+        dob (str): The user's date of birth in 'YYYY-MM-DD' format.
+
+    Returns:
+        str: The user's email address if found, otherwise None.
+    """
+    try:
+        patients_ref = db.collection('patients')
+        user_query = patients_ref.where(filter=firestore.FieldFilter('firstName', '==', first_name))\
+                                 .where(filter=firestore.FieldFilter('lastName', '==', last_name))\
+                                 .where(filter=firestore.FieldFilter('dob', '==', dob)).limit(1)
+        user_docs = user_query.stream()
+        user_doc = next(user_docs, None)
+        
+        if user_doc:
+            return user_doc.to_dict().get('email')
+        
+        return None
+    
+    except exceptions.FirebaseError as e:
+        print(f"Firestore query failed: {e}")
+        return None
+    except Exception as e:
+        print(f"An unexpected error occurred while finding user email: {e}")
+        return None
+
 def send_confirmation_email(recipient_email, appointment_details):
     """
     Sends a confirmation email using SMTP.
@@ -188,8 +216,8 @@ def send_confirmation_email(recipient_email, appointment_details):
         # Get SMTP credentials and server details from environment variables.
         smtp_host = os.environ.get('SMTP_HOST')
         smtp_port = int(os.environ.get('SMTP_PORT', 587))
-        smtp_user = os.environ.get('SENDER_EMAIL')
-        smtp_pass = os.environ.get('SENDER_PASSWORD')
+        smtp_user = os.environ.get('SMTP_USER')
+        smtp_pass = os.environ.get('SMTP_PASS')
 
         if not all([smtp_host, smtp_user, smtp_pass]):
             print("SMTP environment variables are not set. Cannot send email.")
@@ -269,7 +297,7 @@ def book_appointment(appointment_doc_id, user_name, user_email):
         })
         print(f"Appointment record created for user {user_name}.")
         return True
-        
+    
     except Exception as e:
         print(f"Error booking appointment: {e}")
         return False
@@ -340,8 +368,9 @@ def webhook():
         insurance_provider = session_params.get('insurance_provider', None)
         doctor_info_list = session_params.get('doctor_info_list', [])
         
-        # Parameter for user identification and booking confirmation
-        patient_id = session_params.get('patient_id', None)
+        # Parameters for user identification and booking confirmation
+        user_name = session_params.get('user_name', None)
+        dob = session_params.get('dob', None)
         booking_confirmed = session_params.get('booking_confirmed', False)
 
         # --- Logic for Appointment Confirmation ---
@@ -351,18 +380,29 @@ def webhook():
             selected_doctor_object = session_params.get('selected_doctor_object', {})
             
             # This is a critical debugging check!
-            print(f"Attempting to book: selected_doctor_object={selected_doctor_object}, patient_id={patient_id}")
+            print(f"Attempting to book: selected_doctor_object={selected_doctor_object}, user_name={user_name}, dob={dob}")
             
-            if selected_doctor_object and patient_id:
-                # Use the new helper function to get patient details
-                patient_data = get_patient_details(patient_id)
+            if selected_doctor_object and user_name and dob:
+                name_parts = user_name.split(' ', 1)
+                first_name = name_parts[0]
+                last_name = name_parts[1] if len(name_parts) > 1 else ""
+                
+                # Use the new helper function to get a clean date string.
+                formatted_dob = _get_date_string_from_dob_param(dob)
 
-                if patient_data:
-                    user_email = patient_data.get('email')
-                    user_name = f"{patient_data.get('firstName')} {patient_data.get('lastName')}"
-                    
+                if not formatted_dob:
+                    response_text = "I'm sorry, the date of birth format is incorrect. Please use MM/DD/YYYY."
+                    return jsonify({
+                        "fulfillmentResponse": {
+                            "messages": [{"text": {"text": [response_text]}}]
+                        }
+                    })
+
+                user_email = find_user_email(first_name, last_name, formatted_dob)
+
+                if user_email:
                     # The `id` is a string, which is what we need.
-                    appointment_doc_id = selected_doctor_object.get('id')
+                    appointment_doc_id = selected_doctor_object.get('id') 
                     
                     if appointment_doc_id:
                         appointment_booked = book_appointment(appointment_doc_id, user_name, user_email)
@@ -389,7 +429,7 @@ def webhook():
                     else:
                         response_text = "I'm sorry, I could not find the appointment details. Please try again."
                 else:
-                    response_text = "I'm sorry, I could not find your information in the database with that patient ID. Please ensure your ID is correct."
+                    response_text = "I'm sorry, I could not find your information in the database. Please ensure your name and date of birth are correct."
             else:
                 response_text = "I'm sorry, I could not find the necessary details to book your appointment. Please restart the process."
             
@@ -399,7 +439,9 @@ def webhook():
                     "parameters": {
                         "booking_confirmed": None,
                         "selected_doctor_object": None,
-                        "patient_id": None,
+                        "user_name": None,
+                        "dob": None,
+                        # Crucial fix: Send back the parameters for Dialogflow's final fulfillment message
                         "doctor_name": selected_doctor_object.get('name') if selected_doctor_object else None,
                         "appointment_time": session_params.get('appointment_time') or selected_doctor_object.get('time_slot') if selected_doctor_object else None
                     }
@@ -522,3 +564,5 @@ def webhook():
 
 if __name__ == '__main__':
     app.run(debug=True, port=int(os.environ.get('PORT', 8000)))
+
+
