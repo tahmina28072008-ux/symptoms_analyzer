@@ -104,16 +104,19 @@ def get_available_doctors(specialty, max_results=5):
                 # Fetch the corresponding doctor document to get their specialty.
                 doctor_doc = db.collection('doctors').document(doctor_id).get()
                 
-                if doctor_doc.exists and doctor_doc.to_dict().get('specialty') == specialty:
-                    found_doctor_ids.add(doctor_id)
+                if doctor_doc.exists:
                     doctor_data = doctor_doc.to_dict()
-                    
-                    # Construct the final object with all necessary info.
-                    appointment_data['id'] = appointment_doc.id
-                    appointment_data['name'] = doctor_data.get('name')
-                    appointment_data['clinic_address'] = doctor_data.get('clinic_address')
-                    available_doctors.append(appointment_data)
-
+                    # Updated: Only check for the 'specialty' field.
+                    doc_specialty = doctor_data.get('specialty')
+                    if doc_specialty == specialty:
+                        found_doctor_ids.add(doctor_id)
+                        
+                        # Construct the final object with all necessary info.
+                        appointment_data['id'] = appointment_doc.id
+                        appointment_data['name'] = doctor_data.get('name')
+                        appointment_data['clinic_address'] = doctor_data.get('clinic_address')
+                        available_doctors.append(appointment_data)
+        
         return available_doctors
         
     except Exception as e:
