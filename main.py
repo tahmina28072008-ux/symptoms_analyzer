@@ -38,8 +38,8 @@ app = Flask(__name__)
 def get_patient_details(patient_id):
     """
     Looks up a patient's details in the 'patients' Firestore collection
-    using their unique patient_id (which is the document ID).
-
+    using their unique patient_id field.
+    
     Args:
         patient_id (str): The patient's unique ID.
 
@@ -47,14 +47,21 @@ def get_patient_details(patient_id):
         dict: The patient's data (e.g., email, name) if found, otherwise None.
     """
     try:
-        patient_ref = db.collection('patients').document(patient_id)
-        patient_doc = patient_ref.get()
-
-        if patient_doc.exists:
-            return patient_doc.to_dict()
+        # Use a query to find the document where the 'patient_id' field matches the value.
+        patients_ref = db.collection('patients')
+        query = patients_ref.where('patient_id', '==', patient_id).limit(1) # We expect only one match
         
+        docs = query.stream()
+        
+        # The stream() method returns a generator, so we iterate through it.
+        # Since we expect at most one document, we can use a loop or next().
+        for doc in docs:
+            print(f"Successfully found patient with Firestore Document ID: {doc.id}")
+            return doc.to_dict()
+
+        # If the loop finishes without finding a document, it means there was no match.
+        print(f"No patient document found with patient_id: {patient_id}")
         return None
-    
     except exceptions.FirebaseError as e:
         print(f"Firestore query failed for patient ID {patient_id}: {e}")
         return None
@@ -107,10 +114,10 @@ def get_available_doctors(specialty):
             # If no weekend slot is found, search for any available slot within the next 30 days.
             if not appointment_doc:
                 any_day_query = availability_ref.where(filter=firestore.FieldFilter('doctor_id', '==', doctor_id)) \
-                                                .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
-                                                .where(filter=firestore.FieldFilter('time_slot', '>', now)) \
-                                                .where(filter=firestore.FieldFilter('time_slot', '<', thirty_days_from_now)) \
-                                                .order_by('time_slot').limit(1)
+                                            .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
+                                            .where(filter=firestore.FieldFilter('time_slot', '>', now)) \
+                                            .where(filter=firestore.FieldFilter('time_slot', '<', thirty_days_from_now)) \
+                                            .order_by('time_slot').limit(1)
                 appointment_doc = next(any_day_query.stream(), None)
             
             if appointment_doc:
@@ -181,8 +188,8 @@ def send_confirmation_email(recipient_email, appointment_details):
         # Get SMTP credentials and server details from environment variables.
         smtp_host = os.environ.get('SMTP_HOST')
         smtp_port = int(os.environ.get('SMTP_PORT', 587))
-        smtp_user = os.environ.get('SMTP_USER')
-        smtp_pass = os.environ.get('SMTP_PASS')
+        smtp_user = os.environ.get('SENDER_EMAIL')
+        smtp_pass = os.environ.get('SENDER_PASSWORD')
 
         if not all([smtp_host, smtp_user, smtp_pass]):
             print("SMTP environment variables are not set. Cannot send email.")
