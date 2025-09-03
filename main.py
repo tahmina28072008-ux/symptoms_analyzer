@@ -99,20 +99,20 @@ def get_available_doctors(specialty):
             end_of_weekend = start_of_weekend + timedelta(days=2) # Covers Saturday and Sunday
             
             weekend_query = availability_ref.where(filter=firestore.FieldFilter('doctor_id', '==', doctor_id)) \
-                                     .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
-                                     .where(filter=firestore.FieldFilter('time_slot', '>=', start_of_weekend)) \
-                                     .where(filter=firestore.FieldFilter('time_slot', '<', end_of_weekend)) \
-                                     .order_by('time_slot').limit(1)
+                                           .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
+                                           .where(filter=firestore.FieldFilter('time_slot', '>=', start_of_weekend)) \
+                                           .where(filter=firestore.FieldFilter('time_slot', '<', end_of_weekend)) \
+                                           .order_by('time_slot').limit(1)
             
             appointment_doc = next(weekend_query.stream(), None)
 
             # If no weekend slot is found, search for any available slot within the next 30 days.
             if not appointment_doc:
                 any_day_query = availability_ref.where(filter=firestore.FieldFilter('doctor_id', '==', doctor_id)) \
-                                         .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
-                                         .where(filter=firestore.FieldFilter('time_slot', '>', now)) \
-                                         .where(filter=firestore.FieldFilter('time_slot', '<', thirty_days_from_now)) \
-                                         .order_by('time_slot').limit(1)
+                                               .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
+                                               .where(filter=firestore.FieldFilter('time_slot', '>', now)) \
+                                               .where(filter=firestore.FieldFilter('time_slot', '<', thirty_days_from_now)) \
+                                               .order_by('time_slot').limit(1)
                 appointment_doc = next(any_day_query.stream(), None)
             
             if appointment_doc:
@@ -141,7 +141,7 @@ def check_insurance_and_cost(doctor_name, insurance_provider):
 
     Returns:
         tuple: A tuple containing the coverage status message (str), the estimated
-                visit cost (str), and the estimated copay (str).
+               visit cost (str), and the estimated copay (str).
     """
     try:
         doctors_ref = db.collection('doctors')
@@ -184,8 +184,8 @@ def find_user_email(first_name, last_name, dob):
     try:
         patients_ref = db.collection('patients')
         user_query = patients_ref.where(filter=firestore.FieldFilter('firstName', '==', first_name))\
-                                 .where(filter=firestore.FieldFilter('lastName', '==', last_name))\
-                                 .where(filter=firestore.FieldFilter('dob', '==', dob)).limit(1)
+                               .where(filter=firestore.FieldFilter('lastName', '==', last_name))\
+                               .where(filter=firestore.FieldFilter('dob', '==', dob)).limit(1)
         user_docs = user_query.stream()
         user_doc = next(user_docs, None)
         
@@ -564,5 +564,3 @@ def webhook():
 
 if __name__ == '__main__':
     app.run(debug=True, port=int(os.environ.get('PORT', 8000)))
-
-
