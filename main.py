@@ -64,13 +64,15 @@ def _get_date_string_from_dob_param(dob_param):
     
     return None
 
-def get_available_doctors(specialty):
+def get_available_doctors(specialty, max_results=5):
     """
     Queries Firestore for all available doctors of a specific specialty and their available time slots.
-    The query prioritizes weekend appointments, then falls back to any day.
+    The query prioritizes weekend appointments, then falls back to any day. It stops after finding a
+    maximum of `max_results` doctors to avoid overwhelming the user.
     
     Args:
         specialty (str): The medical specialty to search for (e.g., 'gp', 'specialist').
+        max_results (int): The maximum number of doctors to return.
         
     Returns:
         list: A list of dictionaries, where each dictionary contains a doctor's name, clinic address, and an available slot. Returns an empty list if no doctors are found.
@@ -86,6 +88,9 @@ def get_available_doctors(specialty):
         doctor_docs = doctor_query.stream()
 
         for doctor_doc in doctor_docs:
+            if len(available_doctors) >= max_results:
+                break
+
             doctor_id = doctor_doc.id
             doctor_data = doctor_doc.to_dict()
             
