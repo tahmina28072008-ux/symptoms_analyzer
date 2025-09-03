@@ -35,39 +35,34 @@ app = Flask(__name__)
 
 # --- Helper Functions for Database Interaction and Email ---
 
-def get_patient_details(patient_id):
+def _get_date_string_from_dob_param(dob_param):
     """
-    Looks up a patient's details in the 'patients' Firestore collection
-    using their unique patient_id field.
+    Helper function to robustly parse the date from a Dialogflow parameter.
+    It handles simple strings, structured dictionary formats, and Firestore Timestamps.
+    """
+    if isinstance(dob_param, str):
+        # Handle simple MM/DD/YYYY strings
+        try:
+            dob_obj = datetime.strptime(dob_param, "%m/%d/%Y")
+            return dob_obj.strftime("%Y-%m-%d")
+        except ValueError:
+            # Handle standard ISO 8601 format from Dialogflow entities
+            try:
+                dob_obj = datetime.strptime(dob_param, "%Y-%m-%dT%H:%M:%SZ")
+                return dob_obj.strftime("%Y-%m-%d")
+            except ValueError:
+                return None
+    elif isinstance(dob_param, dict) and 'year' in dob_param and 'month' in dob_param and 'day' in dob_param:
+        try:
+            # Reconstruct the date from the dictionary and format it as YYYY-MM-DD
+            year = int(dob_param['year'])
+            month = int(dob_param['month'])
+            day = int(dob_param['day'])
+            return f"{year:04d}-{month:02d}-{day:02d}"
+        except (ValueError, TypeError):
+            return None
     
-    Args:
-        patient_id (str): The patient's unique ID.
-
-    Returns:
-        dict: The patient's data (e.g., email, name) if found, otherwise None.
-    """
-    try:
-        # Use a query to find the document where the 'patient_id' field matches the value.
-        patients_ref = db.collection('patients')
-        query = patients_ref.where('patient_id', '==', patient_id).limit(1) # We expect only one match
-        
-        docs = query.stream()
-        
-        # The stream() method returns a generator, so we iterate through it.
-        # Since we expect at most one document, we can use a loop or next().
-        for doc in docs:
-            print(f"Successfully found patient with Firestore Document ID: {doc.id}")
-            return doc.to_dict()
-
-        # If the loop finishes without finding a document, it means there was no match.
-        print(f"No patient document found with patient_id: {patient_id}")
-        return None
-    except exceptions.FirebaseError as e:
-        print(f"Firestore query failed for patient ID {patient_id}: {e}")
-        return None
-    except Exception as e:
-        print(f"An unexpected error occurred while finding patient details: {e}")
-        return None
+    return None
 
 def get_available_doctors(specialty):
     """
