@@ -90,7 +90,6 @@ def get_available_doctors(specialty):
             doctor_data = doctor_doc.to_dict()
             
             # Step 2: For each doctor, find the next available appointment.
-            # FIX: The query for doctor_availability was incorrect. It should query the collection, not a document.
             availability_ref = db.collection('doctor_availability')
             
             # First, try to find an appointment on the upcoming weekend.
@@ -100,20 +99,20 @@ def get_available_doctors(specialty):
             end_of_weekend = start_of_weekend + timedelta(days=2) # Covers Saturday and Sunday
             
             weekend_query = availability_ref.where(filter=firestore.FieldFilter('doctor_id', '==', doctor_id)) \
-                                             .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
-                                             .where(filter=firestore.FieldFilter('time_slot', '>=', start_of_weekend)) \
-                                             .where(filter=firestore.FieldFilter('time_slot', '<', end_of_weekend)) \
-                                             .order_by('time_slot').limit(1)
+                                     .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
+                                     .where(filter=firestore.FieldFilter('time_slot', '>=', start_of_weekend)) \
+                                     .where(filter=firestore.FieldFilter('time_slot', '<', end_of_weekend)) \
+                                     .order_by('time_slot').limit(1)
             
             appointment_doc = next(weekend_query.stream(), None)
 
             # If no weekend slot is found, search for any available slot within the next 30 days.
             if not appointment_doc:
                 any_day_query = availability_ref.where(filter=firestore.FieldFilter('doctor_id', '==', doctor_id)) \
-                                                 .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
-                                                 .where(filter=firestore.FieldFilter('time_slot', '>', now)) \
-                                                 .where(filter=firestore.FieldFilter('time_slot', '<', thirty_days_from_now)) \
-                                                 .order_by('time_slot').limit(1)
+                                         .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
+                                         .where(filter=firestore.FieldFilter('time_slot', '>', now)) \
+                                         .where(filter=firestore.FieldFilter('time_slot', '<', thirty_days_from_now)) \
+                                         .order_by('time_slot').limit(1)
                 appointment_doc = next(any_day_query.stream(), None)
             
             if appointment_doc:
@@ -173,14 +172,14 @@ def find_user_email(first_name, last_name, dob):
     """
     Looks up a user's email address in the 'patients' Firestore collection
     based on their first name, last name, and date of birth.
-    
+
     Args:
         first_name (str): The user's first name.
         last_name (str): The user's last name.
         dob (str): The user's date of birth in 'YYYY-MM-DD' format.
-    
+
     Returns:
-        tuple: (email, document_id) or (None, None) if not found.
+        str: The user's email address if found, otherwise None.
     """
     try:
         patients_ref = db.collection('patients')
@@ -191,16 +190,16 @@ def find_user_email(first_name, last_name, dob):
         user_doc = next(user_docs, None)
         
         if user_doc:
-            return user_doc.to_dict().get('email'), user_doc.id
+            return user_doc.to_dict().get('email')
         
-        return None, None
+        return None
     
     except exceptions.FirebaseError as e:
         print(f"Firestore query failed: {e}")
-        return None, None
+        return None
     except Exception as e:
         print(f"An unexpected error occurred while finding user email: {e}")
-        return None, None
+        return None
 
 def send_confirmation_email(recipient_email, appointment_details):
     """
@@ -216,22 +215,17 @@ def send_confirmation_email(recipient_email, appointment_details):
     try:
         # Get SMTP credentials and server details from environment variables.
         smtp_host = os.environ.get('SMTP_HOST')
-        smtp_port = os.environ.get('SMTP_PORT', 587)
-        # FIX: Use SENDER_EMAIL and SENDER_PASSWORD
-        sender_email = os.environ.get('SENDER_EMAIL')
-        sender_password = os.environ.get('SENDER_PASSWORD')
+        smtp_port = int(os.environ.get('SMTP_PORT', 587))
+        smtp_user = os.environ.get('SMTP_USER')
+        smtp_pass = os.environ.get('SMTP_PASS')
 
-        if not all([smtp_host, smtp_port, sender_email, sender_password]):
+        if not all([smtp_host, smtp_user, smtp_pass]):
             print("SMTP environment variables are not set. Cannot send email.")
-            print("Please ensure SMTP_HOST, SMTP_PORT, SENDER_EMAIL, and SENDER_PASSWORD are configured.")
             return False
-            
-        smtp_port = int(smtp_port)
 
         msg = EmailMessage()
         msg['Subject'] = 'Your Appointment Confirmation'
-        # FIX: Use SENDER_EMAIL for the 'From' address
-        msg['From'] = sender_email
+        msg['From'] = smtp_user
         msg['To'] = recipient_email
         
         doctor_name = appointment_details.get('doctor_name')
@@ -256,8 +250,7 @@ def send_confirmation_email(recipient_email, appointment_details):
 
         with smtplib.SMTP(smtp_host, smtp_port) as server:
             server.starttls()
-            # FIX: Use SENDER_EMAIL and SENDER_PASSWORD for login
-            server.login(sender_email, sender_password)
+            server.login(smtp_user, smtp_pass)
             server.send_message(msg)
             print(f"Confirmation email sent to {recipient_email}")
             return True
@@ -266,56 +259,45 @@ def send_confirmation_email(recipient_email, appointment_details):
         print(f"Error sending confirmation email: {e}")
         return False
 
-# FIX: Refactored the book_appointment function to store the appointment
-# as a subcollection under the correct patient's document.
-def book_appointment(appointment_doc_id, patient_doc_id, user_name, user_email, appointment_details):
+def book_appointment(appointment_doc_id, user_name, user_email):
     """
     Updates the Firestore database to mark a specific appointment as booked
-    and creates a new appointment record for the user within their patient document.
+    and creates a new appointment record for the user.
 
     Args:
         appointment_doc_id (str): The document ID of the specific time slot to book.
-        patient_doc_id (str): The document ID of the patient to link the appointment to.
         user_name (str): The name of the user booking the appointment.
         user_email (str): The email of the user booking the appointment.
-        appointment_details (dict): The full details of the appointment.
 
     Returns:
         bool: True if the booking was successful, False otherwise.
     """
-    print(f"Attempting to book appointment with ID: {appointment_doc_id} for patient: {patient_doc_id}")
+    print(f"Attempting to book appointment with ID: {appointment_doc_id}")
     try:
-        # Get the reference to the specific appointment document to update its status.
+        # Get the reference to the specific appointment document.
         appointment_doc_ref = db.collection('doctor_availability').document(appointment_doc_id)
         
-        # Use a transaction to ensure atomicity and prevent race conditions.
-        @firestore.transactional
-        def update_appointment_in_transaction(transaction, doc_ref, details):
-            snapshot = doc_ref.get(transaction=transaction)
-            if not snapshot.exists or snapshot.get('is_booked'):
-                raise exceptions.Aborted("Appointment is either non-existent or already booked.")
-            
-            transaction.update(doc_ref, {'is_booked': True})
-            return details
+        # Check if the document exists and is not already booked.
+        doc_snapshot = appointment_doc_ref.get()
+        if not doc_snapshot.exists or doc_snapshot.get('is_booked'):
+            print("Appointment is either non-existent or already booked.")
+            return False
 
-        # Run the transaction to update the doctor's availability.
-        appointment_details = update_appointment_in_transaction(db.transaction(), appointment_doc_ref, appointment_details)
+        # Update the document to mark it as booked.
+        appointment_doc_ref.update({'is_booked': True})
         print("Appointment document updated successfully.")
 
-        # Create a new document in the patient's subcollection 'appointments'.
-        appointments_ref = db.collection('patients').document(patient_doc_id).collection('appointments')
+        # Create a new document in the 'appointments' collection.
+        appointments_ref = db.collection('appointments')
         appointments_ref.add({
             'user_name': user_name,
             'user_email': user_email,
-            'doctor_name': appointment_details.get('doctor_name'),
-            'time_slot': appointment_details.get('time_slot'),
+            'time_slot_ref': appointment_doc_ref,
             'booking_date': datetime.now()
         })
         print(f"Appointment record created for user {user_name}.")
         return True
-    except exceptions.Aborted as e:
-        print(f"Transaction aborted: {e}")
-        return False
+    
     except Exception as e:
         print(f"Error booking appointment: {e}")
         return False
@@ -355,7 +337,7 @@ def get_doctor_from_choice(doctor_info_list, choice_string):
     if match:
         name = match.group(1).strip()
         # Find the doctor object where the name matches
-        return next((d for d in doctor_info_list if name.lower() in d.get('name', '').lower()), None)
+        return next((d for d in doctor_info_list if name in d.get('name', '')), None)
     
     return None
 
@@ -416,34 +398,25 @@ def webhook():
                         }
                     })
 
-                # FIX: find_user_email now returns both the email and the document ID.
-                user_email, patient_doc_id = find_user_email(first_name, last_name, formatted_dob)
+                user_email = find_user_email(first_name, last_name, formatted_dob)
 
-                if user_email and patient_doc_id:
+                if user_email:
                     # The `id` is a string, which is what we need.
-                    appointment_doc_id = selected_doctor_object.get('id')
+                    appointment_doc_id = selected_doctor_object.get('id') 
                     
                     if appointment_doc_id:
-                        # FIX: Pass the patient_doc_id to the booking function.
-                        appointment_booked = book_appointment(
-                            appointment_doc_id, 
-                            patient_doc_id, 
-                            user_name, 
-                            user_email, 
-                            selected_doctor_object
-                        )
+                        appointment_booked = book_appointment(appointment_doc_id, user_name, user_email)
                     
                         if appointment_booked:
+                            # The `time_slot` here is a string, so we need to parse it.
+                            # The user's provided log shows appointment_time as a separate parameter.
+                            # We will use that here, but if that is not available, we can fall back to the selected doctor object.
                             time_slot_str = session_params.get('appointment_time') or selected_doctor_object.get('time_slot')
-                            # FIX: Add a check to handle both Firestore Timestamp and string
-                            # The time_slot from the database is a Firestore Timestamp object.
-                            time_slot = selected_doctor_object.get('time_slot')
-                            if not isinstance(time_slot, datetime):
-                                time_slot = datetime.strptime(time_slot_str, '%a, %d %b %Y %H:%M:%S %Z')
-
+                            appointment_time = datetime.strptime(time_slot_str, '%a, %d %b %Y %H:%M:%S GMT')
+                            
                             email_sent = send_confirmation_email(user_email, {
                                 "doctor_name": selected_doctor_object.get("name"),
-                                "time_slot": time_slot,
+                                "time_slot": appointment_time,
                                 "clinic_address": selected_doctor_object.get("clinic_address")
                             })
                             
@@ -591,3 +564,5 @@ def webhook():
 
 if __name__ == '__main__':
     app.run(debug=True, port=int(os.environ.get('PORT', 8000)))
+
+
