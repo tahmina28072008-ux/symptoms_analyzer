@@ -79,56 +79,40 @@ def get_available_doctors(specialty, max_results=5):
     """
     try:
         available_doctors = []
+        found_doctor_ids = set()
+        
         now = datetime.now()
         thirty_days_from_now = now + timedelta(days=30)
+        
+        # Query for unbooked appointments within the next 30 days, ordered by time.
+        availability_ref = db.collection('doctor_availability')
+        availability_query = availability_ref.where(filter=firestore.FieldFilter('is_booked', '==', False)) \
+                                             .where(filter=firestore.FieldFilter('time_slot', '>', now)) \
+                                             .where(filter=firestore.FieldFilter('time_slot', '<', thirty_days_from_now)) \
+                                             .order_by('time_slot') \
+                                             .limit(50) # Use a large limit to find enough options
 
-        # Step 1: Find all doctors with the specified specialty.
-        doctors_ref = db.collection('doctors')
-        doctor_query = doctors_ref.where(filter=firestore.FieldFilter('specialty', '==', specialty))
-        doctor_docs = doctor_query.stream()
-
-        for doctor_doc in doctor_docs:
+        for appointment_doc in availability_query.stream():
             if len(available_doctors) >= max_results:
                 break
 
-            doctor_id = doctor_doc.id
-            doctor_data = doctor_doc.to_dict()
+            appointment_data = appointment_doc.to_dict()
+            doctor_id = appointment_data.get('doctor_id')
             
-            # Step 2: For each doctor, find the next available appointment.
-            availability_ref = db.collection('doctor_availability')
-            
-            # First, try to find an appointment on the upcoming weekend.
-            days_until_saturday = (5 - now.weekday() + 7) % 7
-            next_saturday = now + timedelta(days=days_until_saturday)
-            start_of_weekend = datetime(next_saturday.year, next_saturday.month, next_saturday.day)
-            end_of_weekend = start_of_weekend + timedelta(days=2) # Covers Saturday and Sunday
-            
-            weekend_query = availability_ref.where(filter=firestore.FieldFilter('doctor_id', '==', doctor_id)) \
-                                           .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
-                                           .where(filter=firestore.FieldFilter('time_slot', '>=', start_of_weekend)) \
-                                           .where(filter=firestore.FieldFilter('time_slot', '<', end_of_weekend)) \
-                                           .order_by('time_slot').limit(1)
-            
-            appointment_doc = next(weekend_query.stream(), None)
-
-            # If no weekend slot is found, search for any available slot within the next 30 days.
-            if not appointment_doc:
-                any_day_query = availability_ref.where(filter=firestore.FieldFilter('doctor_id', '==', doctor_id)) \
-                                               .where(filter=firestore.FieldFilter('is_booked', '==', False)) \
-                                               .where(filter=firestore.FieldFilter('time_slot', '>', now)) \
-                                               .where(filter=firestore.FieldFilter('time_slot', '<', thirty_days_from_now)) \
-                                               .order_by('time_slot').limit(1)
-                appointment_doc = next(any_day_query.stream(), None)
-            
-            if appointment_doc:
-                appointment_data = appointment_doc.to_dict()
-                appointment_data['id'] = appointment_doc.id # Save the document ID for booking
+            # Check if we've already found an appointment for this doctor.
+            if doctor_id not in found_doctor_ids:
+                # Fetch the corresponding doctor document to get their specialty.
+                doctor_doc = db.collection('doctors').document(doctor_id).get()
                 
-                # Add the doctor's name and clinic address to the availability data
-                # for easier access later in the flow.
-                appointment_data['name'] = doctor_data.get('name')
-                appointment_data['clinic_address'] = doctor_data.get('clinic_address')
-                available_doctors.append(appointment_data)
+                if doctor_doc.exists and doctor_doc.to_dict().get('specialty') == specialty:
+                    found_doctor_ids.add(doctor_id)
+                    doctor_data = doctor_doc.to_dict()
+                    
+                    # Construct the final object with all necessary info.
+                    appointment_data['id'] = appointment_doc.id
+                    appointment_data['name'] = doctor_data.get('name')
+                    appointment_data['clinic_address'] = doctor_data.get('clinic_address')
+                    available_doctors.append(appointment_data)
 
         return available_doctors
         
